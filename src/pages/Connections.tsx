@@ -1,9 +1,30 @@
+import {
+	Copy,
+	Database,
+	DotsThreeVertical,
+	Export,
+	Gear,
+	GithubLogo,
+	Lock,
+	PencilSimple,
+	Plus,
+	Trash,
+	UploadSimple,
+} from "@phosphor-icons/react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { EmptyState } from "@/components/EmptyState";
+import { toast } from "sonner";
 import { ConnectionForm } from "@/components/ConnectionForm";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/EmptyState";
+import { ForgeGraphTree } from "@/components/ForgeGraphTree";
+import { ClickhouseIcon } from "@/components/icons/clickhouse";
+import { PostgresqlIcon } from "@/components/icons/postgres";
+import { RedisIcon } from "@/components/icons/redis";
+import { SqliteIcon } from "@/components/icons/sqlite";
+import { UpdateChecker } from "@/components/UpdateChecker";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -14,50 +35,30 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-	Database,
-	Gear,
-	GithubLogo,
-	PencilSimple,
-	Trash,
-	Plus,
-	DotsThreeVertical,
-	Lock,
-	Copy,
-	Export,
-	UploadSimple,
-} from "@phosphor-icons/react";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
 	ContextMenu,
 	ContextMenuContent,
 	ContextMenuItem,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-
-import { PostgresqlIcon } from "@/components/icons/postgres";
-import { RedisIcon } from "@/components/icons/redis";
-import { SqliteIcon } from "@/components/icons/sqlite";
-import { ClickhouseIcon } from "@/components/icons/clickhouse";
-
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
 import {
 	api,
 	type Connection,
 	type ConnectionFormData,
 	type ConnectionsExport,
+	type ForgeGraphService,
 } from "@/lib/tauri";
-import { Spinner } from "@/components/ui/spinner";
-import { UpdateChecker } from "@/components/UpdateChecker";
+import { parseCachedForgeGraphServices } from "@/lib/forgegraph";
 import { handleDragStart } from "@/lib/windowDrag";
-import { save, open } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { toast } from "sonner";
 
 // Database type icons and colors
 const getDbTypeConfig = (type: string) => {
@@ -105,6 +106,7 @@ export function Connections() {
 	const navigate = useNavigate();
 	const [connections, setConnections] = useState<Connection[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [fgLoading, setFgLoading] = useState(true);
 	const [isFormOpen, setIsFormOpen] = useState(false);
 	const [editingConnection, setEditingConnection] = useState<Connection | null>(
 		null,
@@ -112,6 +114,11 @@ export function Connections() {
 	const [deletingConnection, setDeletingConnection] =
 		useState<Connection | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
+	const [fgServices, setFgServices] = useState<ForgeGraphService[]>([]);
+	const [fgConfigured, setFgConfigured] = useState(false);
+	const databaseCount = fgConfigured
+		? fgServices.length + connections.length
+		: connections.length;
 
 	const fetchConnections = async () => {
 		try {
@@ -124,8 +131,35 @@ export function Connections() {
 		}
 	};
 
+	const syncForgeGraph = async () => {
+		try {
+			const configured = await api.forgegraph.isConfigured();
+			setFgConfigured(configured);
+			if (configured) {
+				const cached = await api.forgegraph.sync();
+				setFgServices(parseCachedForgeGraphServices(cached));
+			} else {
+				setFgServices([]);
+			}
+		} catch (error) {
+			console.error("ForgeGraph sync failed:", error);
+			try {
+				const cached = await api.forgegraph.listCached();
+				if (cached.length > 0) {
+					setFgServices(parseCachedForgeGraphServices(cached));
+					setFgConfigured(true);
+				}
+			} catch {
+				// ignore cache errors
+			}
+		} finally {
+			setFgLoading(false);
+		}
+	};
+
 	useEffect(() => {
 		fetchConnections();
+		syncForgeGraph();
 	}, []);
 
 	const handleCreateConnection = async (data: ConnectionFormData) => {
@@ -185,23 +219,25 @@ export function Connections() {
 
 	const handleDuplicateConnection = async (connection: Connection) => {
 		try {
-			// Create a copy of the connection data without the id and uuid
-			const {
-				id,
-				uuid,
-				name,
-				created_at,
-				updated_at,
-				ssh_use_key,
-				...connectionData
-			} = connection;
 			const duplicatedData: ConnectionFormData = {
-				...connectionData,
-				name: `${name} (Copy)`,
+				type: connection.type,
+				name: `${connection.name} (Copy)`,
+				host: connection.host,
+				port: connection.port,
+				database: connection.database,
+				username: connection.username,
+				password: connection.password,
+				db_type: connection.db_type,
+				file_path: connection.file_path ?? undefined,
 				ssl: Boolean(connection.ssl),
 				ssh_enabled: connection.ssh_enabled
 					? Boolean(connection.ssh_enabled)
 					: undefined,
+				ssh_host: connection.ssh_host,
+				ssh_port: connection.ssh_port,
+				ssh_user: connection.ssh_user,
+				ssh_password: connection.ssh_password,
+				ssh_key_path: connection.ssh_key_path,
 				ssh_use_key: connection.ssh_use_key
 					? Boolean(connection.ssh_use_key)
 					: undefined,
@@ -275,13 +311,13 @@ export function Connections() {
 		}
 	};
 
-	if (loading) {
+	if (loading || fgLoading) {
 		return (
 			<div className="flex items-center justify-center min-h-screen bg-background">
 				<div className="flex flex-col items-center gap-3">
 					<Spinner className="w-8 h-8" />
 					<p className="text-sm text-muted-foreground">
-						Loading connections...
+						Loading databases...
 					</p>
 				</div>
 			</div>
@@ -296,9 +332,9 @@ export function Connections() {
 				className="h-12 shrink-0 flex items-center justify-between gap-2 px-4 pl-20 border-b bg-background/80 backdrop-blur-sm select-none"
 			>
 				<div className="flex items-center gap-2 pl-4">
-					<h1 className="text-sm font-medium text-foreground">Connections</h1>
+					<h1 className="text-sm font-medium text-foreground">Databases</h1>
 					<Badge variant="secondary" className="text-xs">
-						{connections.length}
+						{databaseCount}
 					</Badge>
 				</div>
 				<div className="flex items-center gap-1">
@@ -326,7 +362,23 @@ export function Connections() {
 
 			<div className="flex-1 p-6 overflow-auto">
 				<div className="max-w-2xl mx-auto">
-					{connections.length === 0 ? (
+					{fgConfigured && (
+						<ForgeGraphTree
+							services={fgServices}
+							onSync={async () => {
+								try {
+									const cached = await api.forgegraph.sync();
+									setFgServices(parseCachedForgeGraphServices(cached));
+								} catch (error) {
+									toast.error("ForgeGraph sync failed", {
+										description: String(error),
+									});
+								}
+							}}
+						/>
+					)}
+
+					{!fgConfigured && connections.length === 0 ? (
 						<div className="flex items-center justify-center min-h-[60vh]">
 							<EmptyState
 								icon={<Database className="w-16 h-16" />}
@@ -345,16 +397,18 @@ export function Connections() {
 								]}
 							/>
 						</div>
-					) : (
+					) : connections.length > 0 ? (
 						<div className="space-y-4">
 							{/* Header */}
 							<div className="flex items-center justify-between">
 								<div>
 									<h2 className="text-xl font-semibold tracking-tight">
-										Your Databases
+										{fgConfigured ? "Local connections" : "Your Databases"}
 									</h2>
 									<p className="text-xs text-muted-foreground mt-0.5">
-										Click on a connection to explore
+										{fgConfigured
+											? "Optional fallback for databases outside ForgeGraph."
+											: "Click on a connection to explore"}
 									</p>
 								</div>
 								<div className="flex items-center gap-2">
@@ -528,7 +582,38 @@ export function Connections() {
 								})}
 							</div>
 						</div>
-					)}
+					) : fgConfigured ? (
+						<div className="mt-8 border-t px-3 py-4">
+							<div className="flex items-center justify-between gap-3">
+								<div>
+									<h2 className="text-sm font-medium">Local connections</h2>
+									<p className="text-xs text-muted-foreground mt-0.5">
+										Optional fallback for databases outside ForgeGraph.
+									</p>
+								</div>
+								<div className="flex items-center gap-2">
+									<Button
+										onClick={handleImportConnections}
+										size="sm"
+										variant="outline"
+										className="gap-1.5"
+									>
+										<UploadSimple className="w-4 h-4" />
+										Import
+									</Button>
+									<Button
+										onClick={() => setIsFormOpen(true)}
+										size="sm"
+										variant="outline"
+										className="gap-1.5"
+									>
+										<Plus className="w-4 h-4" weight="bold" />
+										New
+									</Button>
+								</div>
+							</div>
+						</div>
+					) : null}
 				</div>
 
 				<ConnectionForm
