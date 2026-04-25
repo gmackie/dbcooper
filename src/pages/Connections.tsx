@@ -50,7 +50,9 @@ import {
 	type Connection,
 	type ConnectionFormData,
 	type ConnectionsExport,
+	type ForgeGraphService,
 } from "@/lib/tauri";
+import { ForgeGraphTree } from "@/components/ForgeGraphTree";
 import { Spinner } from "@/components/ui/spinner";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { handleDragStart } from "@/lib/windowDrag";
@@ -112,6 +114,8 @@ export function Connections() {
 	const [deletingConnection, setDeletingConnection] =
 		useState<Connection | null>(null);
 	const [isDeleting, setIsDeleting] = useState(false);
+	const [fgServices, setFgServices] = useState<ForgeGraphService[]>([]);
+	const [fgConfigured, setFgConfigured] = useState(false);
 
 	const fetchConnections = async () => {
 		try {
@@ -124,8 +128,51 @@ export function Connections() {
 		}
 	};
 
+	const syncForgeGraph = async () => {
+		try {
+			const settings = await api.settings.getAll();
+			const hasConfig = !!(
+				settings.forgegraph_server && settings.forgegraph_token
+			);
+			setFgConfigured(hasConfig);
+			if (hasConfig) {
+				const services = await api.forgegraph.sync();
+				setFgServices(services);
+			}
+		} catch (error) {
+			// Sync failure is non-fatal — show cached data
+			console.error("ForgeGraph sync failed:", error);
+			try {
+				const cached = await api.forgegraph.listCached();
+				if (cached.length > 0) {
+					setFgServices(
+						cached.map((c) => ({
+							appSlug: c.app_slug,
+							appName: c.app_name,
+							stage: c.stage,
+							kind: c.kind as "postgres" | "redis",
+							nodeName: c.node_name,
+							nodeStatus: c.node_status as
+								| "online"
+								| "degraded"
+								| "offline",
+							config: c.config ? JSON.parse(c.config) : {},
+							transports: c.transports
+								? JSON.parse(c.transports)
+								: [],
+						})),
+					);
+					setFgConfigured(true);
+				}
+			} catch {
+				// ignore cache errors
+			}
+		}
+	};
+
 	useEffect(() => {
 		fetchConnections();
+		syncForgeGraph();
 	}, []);
 
 	const handleCreateConnection = async (data: ConnectionFormData) => {
@@ -326,6 +373,25 @@ export function Connections() {
 
 			<div className="flex-1 p-6 overflow-auto">
 				<div className="max-w-2xl mx-auto">
+					{fgConfigured && (
+						<>
+							<ForgeGraphTree
+								services={fgServices}
+								onSync={async () => {
+									const services = await api.forgegraph.sync();
+									setFgServices(services);
+								}}
+							/>
+							{connections.length > 0 && (
+								<div className="px-3 py-2">
+									<span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+										Local
+									</span>
+								</div>
+							)}
+						</>
+					)}
+
 					{connections.length === 0 ? (
 						<div className="flex items-center justify-center min-h-[60vh]">
 							<EmptyState

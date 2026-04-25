@@ -193,6 +193,37 @@ export interface ConnectionsExport {
 	connections: ExportedConnection[];
 }
 
+// ForgeGraph types
+export interface ForgeGraphTransport {
+	kind: "mesh";
+	host: string;
+	port: number;
+}
+
+export interface ForgeGraphService {
+	appSlug: string;
+	appName: string;
+	stage: string;
+	kind: "postgres" | "redis";
+	nodeName: string;
+	nodeStatus: "online" | "degraded" | "offline";
+	config: Record<string, unknown>;
+	transports: ForgeGraphTransport[];
+}
+
+export interface CachedForgeGraphService {
+	id: number;
+	app_slug: string;
+	app_name: string;
+	stage: string;
+	kind: string;
+	node_name: string;
+	node_status: string;
+	config: string | null;
+	transports: string | null;
+	synced_at: string;
+}
+
 export const api = {
 	connections: {
 		list: () => invoke<Connection[]>("get_connections"),
@@ -748,6 +779,41 @@ export const api = {
 			invoke<string[]>("select_tables_for_query", {
 				instruction,
 				tables,
+			}),
+	},
+
+	forgegraph: {
+		sync: () => invoke<ForgeGraphService[]>("forgegraph_sync"),
+
+		listCached: () =>
+			invoke<CachedForgeGraphService[]>("forgegraph_list_cached"),
+
+		connect: (appSlug: string, stage: string, kind: string) =>
+			invoke<{ status: string; error?: string }>("forgegraph_connect", {
+				appSlug,
+				stage,
+				kind,
+			}),
+
+		disconnect: (appSlug: string, stage: string, kind: string) =>
+			invoke<void>("forgegraph_disconnect", {
+				appSlug,
+				stage,
+				kind,
+			}),
+
+		getStatus: (appSlug: string, stage: string, kind: string) =>
+			invoke<{ status: string; error?: string }>("forgegraph_get_status", {
+				appSlug,
+				stage,
+				kind,
+			}),
+
+		poolKey: (appSlug: string, stage: string, kind: string) =>
+			invoke<string>("forgegraph_pool_key", {
+				appSlug,
+				stage,
+				kind,
 			}),
 	},
 };

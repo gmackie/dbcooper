@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { format as formatSQL } from "sql-formatter";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
 	type Tab,
 	type FunctionDefinitionTab,
@@ -210,6 +210,8 @@ function ContentHeader({
 	onReconnect,
 	onStatusChange,
 	onOpenSettings,
+	isForgeGraph,
+	fgNodeName,
 }: {
 	connection: Connection;
 	navigate: (path: string) => void;
@@ -217,6 +219,8 @@ function ContentHeader({
 	onReconnect: () => Promise<void>;
 	onStatusChange: (status: "connected" | "disconnected") => void;
 	onOpenSettings: () => void;
+	isForgeGraph?: boolean;
+	fgNodeName?: string;
 }) {
 	const { state } = useSidebar();
 	const isCollapsed = state === "collapsed";
@@ -247,12 +251,19 @@ function ContentHeader({
 					onReconnect={onReconnect}
 					onStatusChange={onStatusChange}
 				/>
+				{isForgeGraph && (
+					<Badge variant="secondary" className="text-xs">
+						ForgeGraph {fgNodeName ? `· ${fgNodeName}` : ""}
+					</Badge>
+				)}
 				<Badge variant="secondary" className="capitalize">
 					{connection.type}
 				</Badge>
-				<Badge variant={connection.ssl ? "default" : "secondary"}>
-					SSL: {connection.ssl ? "Yes" : "No"}
-				</Badge>
+				{!isForgeGraph && (
+					<Badge variant={connection.ssl ? "default" : "secondary"}>
+						SSL: {connection.ssl ? "Yes" : "No"}
+					</Badge>
+				)}
 				<Button variant="ghost" size="icon-sm" onClick={onOpenSettings}>
 					<Gear className="w-4 h-4" />
 				</Button>
@@ -269,6 +280,8 @@ function RedisContentHeader({
 	onReconnect,
 	onStatusChange,
 	onOpenSettings,
+	isForgeGraph,
+	fgNodeName,
 }: {
 	connection: Connection;
 	navigate: (path: string) => void;
@@ -276,6 +289,8 @@ function RedisContentHeader({
 	onReconnect: () => Promise<void>;
 	onStatusChange: (status: "connected" | "disconnected") => void;
 	onOpenSettings: () => void;
+	isForgeGraph?: boolean;
+	fgNodeName?: string;
 }) {
 	return (
 		<header
@@ -293,9 +308,11 @@ function RedisContentHeader({
 					Close Connection
 				</Button>
 				<span className="font-semibold">{connection.name}</span>
-				<span className="text-muted-foreground text-sm">
-					{connection.host}:{connection.port}
-				</span>
+				{!isForgeGraph && connection.host && (
+					<span className="text-muted-foreground text-sm">
+						{connection.host}:{connection.port}
+					</span>
+				)}
 			</div>
 			<div className="flex items-center gap-3">
 				<ConnectionStatus
@@ -304,6 +321,11 @@ function RedisContentHeader({
 					onReconnect={onReconnect}
 					onStatusChange={onStatusChange}
 				/>
+				{isForgeGraph && (
+					<Badge variant="secondary" className="text-xs">
+						ForgeGraph {fgNodeName ? `· ${fgNodeName}` : ""}
+					</Badge>
+				)}
 				<Badge variant="secondary" className="capitalize">
 					{connection.type}
 				</Badge>
@@ -318,6 +340,17 @@ function RedisContentHeader({
 export function ConnectionDetails() {
 	const { uuid } = useParams<{ uuid: string }>();
 	const navigate = useNavigate();
+	const location = useLocation();
+	const fgState = location.state as {
+		forgegraph?: boolean;
+		appSlug?: string;
+		appName?: string;
+		stage?: string;
+		kind?: string;
+		nodeName?: string;
+		dbType?: string;
+	} | null;
+	const isForgeGraph = fgState?.forgegraph === true;
 	const { openSettings } = useSettings();
 	const [connection, setConnection] = useState<Connection | null>(null);
 	const [tables, setTables] = useState<DatabaseTable[]>([]);
@@ -496,6 +529,40 @@ export function ConnectionDetails() {
 	useEffect(() => {
 		const fetchConnection = async () => {
 			if (!uuid) return;
+
+			// ForgeGraph connections are already pooled from the sidebar;
+			// build a lightweight Connection object from router state.
+			if (isForgeGraph) {
+				const fgConnection: Connection = {
+					id: 0,
+					uuid,
+					type: fgState!.dbType || "postgres",
+					name: `${fgState!.appName} (${fgState!.stage})`,
+					host: "",
+					port: 0,
+					database: "",
+					username: "",
+					password: "",
+					ssl: 0,
+					db_type: fgState!.dbType || "postgres",
+					file_path: null,
+					ssh_enabled: 0,
+					ssh_host: "",
+					ssh_port: 22,
+					ssh_user: "",
+					ssh_password: "",
+					ssh_key_path: "",
+					ssh_use_key: 0,
+					created_at: "",
+					updated_at: "",
+				};
+				setConnection(fgConnection);
+				// Skip straight to connecting phase (pool.connect will be
+				// handled in the next effect, which also checks isForgeGraph).
+				setLoadingPhase("connecting");
+				return;
+			}
+
 			setLoadingPhase("fetching-config");
 			try {
 				const data = await api.connections.getByUuid(uuid);
@@ -515,7 +582,7 @@ export function ConnectionDetails() {
 		if (uuid) {
 			fetchConnection();
 		}
-	}, [uuid, navigate]);
+	}, [uuid, navigate, isForgeGraph, fgState]);
 
 	const fetchSchemaOverviewData = useCallback(async () => {
 		if (!uuid) return;
@@ -586,19 +653,29 @@ export function ConnectionDetails() {
 
 		const loadData = async () => {
 			try {
-				const connectResult = await api.pool.connect(uuid!);
-
-				if (connectResult.status === "connected") {
+				// ForgeGraph connections are already pooled by the sidebar's
+				// forgegraph_connect command — skip the pool.connect call.
+				if (isForgeGraph) {
 					setConnectionStatus("connected");
 					if (connection.type !== "redis") {
 						setLoadingPhase("loading-schema");
 						await fetchSchemaOverviewData();
 					}
 				} else {
-					setConnectionStatus("disconnected");
-					toast.error("Connection failed", {
-						description: connectResult.error || "Connection failed",
-					});
+					const connectResult = await api.pool.connect(uuid!);
+
+					if (connectResult.status === "connected") {
+						setConnectionStatus("connected");
+						if (connection.type !== "redis") {
+							setLoadingPhase("loading-schema");
+							await fetchSchemaOverviewData();
+						}
+					} else {
+						setConnectionStatus("disconnected");
+						toast.error("Connection failed", {
+							description: connectResult.error || "Connection failed",
+						});
+					}
 				}
 			} catch (error) {
 				setConnectionStatus("disconnected");
@@ -3498,6 +3575,8 @@ export function ConnectionDetails() {
 					onReconnect={handleReconnect}
 					onStatusChange={setConnectionStatus}
 					onOpenSettings={openSettings}
+					isForgeGraph={isForgeGraph}
+					fgNodeName={fgState?.nodeName}
 				/>
 
 				<div className="flex-1 p-4 min-w-0 overflow-auto">
@@ -3546,9 +3625,16 @@ export function ConnectionDetails() {
 							</Button>
 						</div>
 					</div>
-					<div className="text-xs text-muted-foreground mt-1">
-						{connection.database}
-					</div>
+					{isForgeGraph && (
+						<Badge variant="secondary" className="text-xs mt-1 w-fit">
+							ForgeGraph {fgState?.nodeName ? `· ${fgState.nodeName}` : ""}
+						</Badge>
+					)}
+					{!isForgeGraph && connection.database && (
+						<div className="text-xs text-muted-foreground mt-1">
+							{connection.database}
+						</div>
+					)}
 				</SidebarHeader>
 				<SidebarContent className="overflow-hidden p-2">
 					<Tabs
@@ -3662,6 +3748,8 @@ export function ConnectionDetails() {
 					onReconnect={handleReconnect}
 					onStatusChange={setConnectionStatus}
 					onOpenSettings={openSettings}
+					isForgeGraph={isForgeGraph}
+					fgNodeName={fgState?.nodeName}
 				/>
 
 				<TabBar

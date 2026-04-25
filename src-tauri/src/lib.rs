@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod database;
 pub mod db;
+pub mod forgegraph;
 mod ssh_tunnel;
 
 use commands::ai::{generate_sql, select_tables_for_query};
@@ -26,6 +27,10 @@ use commands::postgres::{
 };
 use commands::queries::{
     create_saved_query, delete_saved_query, get_saved_queries, update_saved_query,
+};
+use commands::forgegraph::{
+    forgegraph_connect, forgegraph_disconnect, forgegraph_get_status, forgegraph_list_cached,
+    forgegraph_pool_key, forgegraph_sync,
 };
 use commands::settings::{get_all_settings, get_setting, set_setting};
 use database::pool_manager::PoolManager;
@@ -204,6 +209,12 @@ pub fn run() {
             pool_delete_table_row,
             pool_insert_table_row,
             select_tables_for_query,
+            forgegraph_sync,
+            forgegraph_list_cached,
+            forgegraph_connect,
+            forgegraph_disconnect,
+            forgegraph_get_status,
+            forgegraph_pool_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
