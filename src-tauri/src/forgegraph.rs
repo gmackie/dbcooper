@@ -176,6 +176,58 @@ fn mark_legacy_connection_unavailable(
     service
 }
 
+/// Normalize the `credentials` of a Postgres connection.
+///
+/// The `services.connection` endpoint sometimes returns the full
+/// `postgresql://user:pass@host:port/db` connection string in the
+/// `credentials.password` field instead of the bare password. When that happens
+/// we parse the URL and replace the credential fields with the values extracted
+/// from it. The mesh transport host/port is left untouched — it is the
+/// authoritative Tailscale endpoint and is more reliable than the host embedded
+/// in the URL (which may be a bare node hostname).
+///
+/// Bare passwords and non-Postgres credentials are left unchanged.
+fn normalize_postgres_credentials(conn: &mut ForgeGraphConnection) {
+    let Some(creds) = conn.credentials.as_object_mut() else {
+        return;
+    };
+
+    let password = match creds.get("password").and_then(|v| v.as_str()) {
+        Some(p) if p.starts_with("postgres://") || p.starts_with("postgresql://") => p.to_string(),
+        _ => return,
+    };
+
+    let Ok(url) = url::Url::parse(&password) else {
+        return;
+    };
+
+    // Only rewrite if the URL actually carries a password component; otherwise
+    // we have nothing reliable to substitute and should leave creds as-is.
+    let Some(real_password) = url.password() else {
+        return;
+    };
+    creds.insert("password".to_string(), serde_json::json!(decode(real_password)));
+
+    // Fill username/database only when the server did not already provide them
+    // (the real values from the API take precedence over the embedded URL).
+    let username = url.username();
+    if !username.is_empty() && !creds.contains_key("username") {
+        creds.insert("username".to_string(), serde_json::json!(decode(username)));
+    }
+
+    let database = url.path().trim_start_matches('/');
+    if !database.is_empty() && !creds.contains_key("database") && !creds.contains_key("dbName") {
+        creds.insert("database".to_string(), serde_json::json!(decode(database)));
+    }
+}
+
+/// Percent-decode a URL component, falling back to the raw value on error.
+fn decode(value: &str) -> String {
+    urlencoding::decode(value)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +269,81 @@ mod tests {
             message,
             "ForgeGraph API error (412 Precondition Failed): Binding for playtrek/production has no credential secret"
         );
+    }
+
+    fn postgres_connection(credentials: serde_json::Value) -> ForgeGraphConnection {
+        ForgeGraphConnection {
+            app_slug: "bizpulse".to_string(),
+            app_name: "BizPulse".to_string(),
+            stage: "production".to_string(),
+            kind: "postgres".to_string(),
+            node_name: "hetzner-master".to_string(),
+            node_status: "online".to_string(),
+            config: serde_json::json!({}),
+            transports: vec![Transport {
+                kind: "mesh".to_string(),
+                host: "100.101.32.120".to_string(),
+                port: 5432,
+            }],
+            credentials,
+        }
+    }
+
+    #[test]
+    fn extracts_real_password_when_field_holds_full_connection_url() {
+        // The services.connection endpoint stuffs the whole URL into `password`.
+        let mut conn = postgres_connection(serde_json::json!({
+            "dbName": "bizpulse",
+            "username": "bizpulse",
+            "password": "postgresql://bizpulse:4e2c02dac9@hetzner-master:5432/bizpulse?sslmode=disable",
+        }));
+
+        normalize_postgres_credentials(&mut conn);
+
+        assert_eq!(conn.credentials["password"], "4e2c02dac9");
+        // Server-provided username/dbName are authoritative and preserved.
+        assert_eq!(conn.credentials["username"], "bizpulse");
+        assert_eq!(conn.credentials["dbName"], "bizpulse");
+        // Mesh transport is untouched.
+        assert_eq!(conn.transports[0].host, "100.101.32.120");
+    }
+
+    #[test]
+    fn leaves_bare_password_unchanged() {
+        let mut conn = postgres_connection(serde_json::json!({
+            "dbName": "bizpulse",
+            "username": "bizpulse",
+            "password": "4e2c02dac9",
+        }));
+
+        normalize_postgres_credentials(&mut conn);
+
+        assert_eq!(conn.credentials["password"], "4e2c02dac9");
+    }
+
+    #[test]
+    fn percent_decodes_password_with_special_characters() {
+        let mut conn = postgres_connection(serde_json::json!({
+            "username": "app",
+            "password": "postgres://app:p%40ss%2Fword@host:5432/db",
+        }));
+
+        normalize_postgres_credentials(&mut conn);
+
+        assert_eq!(conn.credentials["password"], "p@ss/word");
+    }
+
+    #[test]
+    fn fills_username_and_database_from_url_when_missing() {
+        let mut conn = postgres_connection(serde_json::json!({
+            "password": "postgresql://dronesplat_app:secret@hetzner-worker:5432/dronesplat",
+        }));
+
+        normalize_postgres_credentials(&mut conn);
+
+        assert_eq!(conn.credentials["password"], "secret");
+        assert_eq!(conn.credentials["username"], "dronesplat_app");
+        assert_eq!(conn.credentials["database"], "dronesplat");
     }
 
     #[test]
@@ -378,7 +505,9 @@ pub async fn get_connection(
         .await
         .map_err(|e| format!("Failed to parse ForgeGraph response: {}", e))?;
 
-    Ok(trpc.result.data.into_inner())
+    let mut conn = trpc.result.data.into_inner();
+    normalize_postgres_credentials(&mut conn);
+    Ok(conn)
 }
 
 async fn get_legacy_database_connection(
