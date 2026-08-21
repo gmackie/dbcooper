@@ -1,7 +1,9 @@
+pub mod cloudflare;
 pub mod commands;
 pub mod database;
 pub mod db;
 pub mod forgegraph;
+pub mod s3;
 mod ssh_tunnel;
 
 use commands::ai::{generate_sql, select_tables_for_query};
@@ -16,9 +18,18 @@ use commands::database::{
     unified_get_table_structure, unified_list_tables, unified_test_connection, update_table_row,
     update_table_row_with_raw_sql,
 };
+use commands::cloudflare::{
+    cloudflare_connect, cloudflare_disconnect, cloudflare_is_configured, cloudflare_list_cached,
+    cloudflare_pool_key, cloudflare_sync, cloudflare_test,
+};
 use commands::forgegraph::{
     forgegraph_connect, forgegraph_disconnect, forgegraph_get_status, forgegraph_is_configured,
     forgegraph_list_cached, forgegraph_pool_key, forgegraph_sync,
+};
+use commands::s3::{
+    s3_copy_object, s3_create_folder, s3_delete_objects, s3_download_object, s3_head_object,
+    s3_list_buckets, s3_list_objects, s3_preview_object, s3_test_connection, s3_test_form,
+    s3_upload_object,
 };
 use commands::pool::{
     pool_connect, pool_delete_table_row, pool_disconnect, pool_execute_query,
@@ -68,7 +79,7 @@ pub fn run() {
                 website: Some("https://dbcooper.amal.sh".into()),
                 website_label: Some("Visit Website".into()),
                 credits: Some(
-                    "A modern database client for PostgreSQL, SQLite, Redis, and ClickHouse."
+                    "A modern database client for PostgreSQL, SQLite, Redis, ClickHouse, D1, Turso, and S3/R2."
                         .into(),
                 ),
                 ..Default::default()
@@ -216,6 +227,24 @@ pub fn run() {
             forgegraph_get_status,
             forgegraph_pool_key,
             forgegraph_is_configured,
+            cloudflare_is_configured,
+            cloudflare_test,
+            cloudflare_sync,
+            cloudflare_list_cached,
+            cloudflare_connect,
+            cloudflare_disconnect,
+            cloudflare_pool_key,
+            s3_test_connection,
+            s3_test_form,
+            s3_list_buckets,
+            s3_list_objects,
+            s3_head_object,
+            s3_preview_object,
+            s3_download_object,
+            s3_upload_object,
+            s3_delete_objects,
+            s3_copy_object,
+            s3_create_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

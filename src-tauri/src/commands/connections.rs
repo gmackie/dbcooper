@@ -35,8 +35,8 @@ pub async fn create_connection(
 
     sqlx::query_as::<_, Connection>(
         r#"
-        INSERT INTO connections (uuid, type, name, host, port, database, username, password, ssl, db_type, file_path, ssh_enabled, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key_path, ssh_use_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO connections (uuid, type, name, host, port, database, username, password, ssl, db_type, file_path, ssh_enabled, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key_path, ssh_use_key, extra)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING *
         "#,
     )
@@ -58,6 +58,7 @@ pub async fn create_connection(
     .bind(&data.ssh_password)
     .bind(&data.ssh_key_path)
     .bind(ssh_use_key)
+    .bind(&data.extra)
     .fetch_one(pool.inner())
     .await
     .map_err(|e| e.to_string())
@@ -79,6 +80,7 @@ pub async fn update_connection(
         SET type = ?, name = ?, host = ?, port = ?, database = ?, username = ?, password = ?, ssl = ?,
             db_type = ?, file_path = ?,
             ssh_enabled = ?, ssh_host = ?, ssh_port = ?, ssh_user = ?, ssh_password = ?, ssh_key_path = ?, ssh_use_key = ?,
+            extra = ?,
             updated_at = datetime('now')
         WHERE id = ?
         RETURNING *
@@ -101,6 +103,7 @@ pub async fn update_connection(
     .bind(&data.ssh_password)
     .bind(&data.ssh_key_path)
     .bind(ssh_use_key)
+    .bind(&data.extra)
     .bind(id)
     .fetch_one(pool.inner())
     .await
@@ -138,6 +141,8 @@ pub struct ExportedConnection {
     pub ssh_password: String,
     pub ssh_key_path: String,
     pub ssh_use_key: bool,
+    #[serde(default)]
+    pub extra: Option<String>,
 }
 
 /// Export file format
@@ -177,6 +182,7 @@ pub async fn export_connection(
         ssh_password: connection.ssh_password,
         ssh_key_path: connection.ssh_key_path,
         ssh_use_key: connection.ssh_use_key == 1,
+        extra: connection.extra,
     };
 
     Ok(ConnectionsExport {
@@ -228,8 +234,8 @@ pub async fn import_connections(
 
         let result = sqlx::query(
             r#"
-            INSERT INTO connections (uuid, type, name, host, port, database, username, password, ssl, db_type, file_path, ssh_enabled, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key_path, ssh_use_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO connections (uuid, type, name, host, port, database, username, password, ssl, db_type, file_path, ssh_enabled, ssh_host, ssh_port, ssh_user, ssh_password, ssh_key_path, ssh_use_key, extra)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&uuid)
@@ -250,6 +256,7 @@ pub async fn import_connections(
         .bind(&conn.ssh_password)
         .bind(&conn.ssh_key_path)
         .bind(ssh_use_key)
+        .bind(&conn.extra)
         .execute(pool.inner())
         .await;
 

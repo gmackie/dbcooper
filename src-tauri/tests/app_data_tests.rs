@@ -44,6 +44,7 @@ async fn create_test_pool() -> (sqlx::SqlitePool, NamedTempFile) {
             ssh_password TEXT NOT NULL DEFAULT '',
             ssh_key_path TEXT NOT NULL DEFAULT '',
             ssh_use_key INTEGER NOT NULL DEFAULT 0,
+            extra TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )

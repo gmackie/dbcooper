@@ -4,11 +4,14 @@
 //! SQLite, Redis, and ClickHouse databases by dispatching to the appropriate driver.
 
 use crate::database::clickhouse::ClickhouseDriver;
+use crate::database::d1::D1Driver;
 use crate::database::postgres::PostgresDriver;
 use crate::database::redis::{RedisDriver, RedisKeyDetails, RedisKeyListResponse};
 use crate::database::sqlite::SqliteDriver;
+use crate::database::turso::TursoDriver;
 use crate::database::{
-    ClickhouseConfig, ClickhouseProtocol, DatabaseDriver, PostgresConfig, RedisConfig, SqliteConfig,
+    ClickhouseConfig, ClickhouseProtocol, D1Config, DatabaseDriver, PostgresConfig, RedisConfig,
+    SqliteConfig, TursoConfig,
 };
 use crate::db::models::{
     Connection, QueryResult, SchemaOverview, TableDataResponse, TableInfo, TableStructure,
@@ -137,6 +140,22 @@ async fn create_driver_with_ssh(
             };
             Box::new(ClickhouseDriver::new(config))
         }
+        "d1" => {
+            let config = D1Config {
+                account_id: effective_host,
+                database_id: database.unwrap_or_default(),
+                api_token: password.unwrap_or_default(),
+                api_base: None,
+            };
+            Box::new(D1Driver::new(config))
+        }
+        "turso" | "libsql" => {
+            let config = TursoConfig {
+                url: effective_host,
+                auth_token: password.unwrap_or_default(),
+            };
+            Box::new(TursoDriver::new(config))
+        }
         _ => return Err(format!("Unsupported database type: {}", db_type)),
     };
 
@@ -193,6 +212,22 @@ fn create_driver(
                 ssl: ssl.unwrap_or(false),
             };
             Ok(Box::new(ClickhouseDriver::new(config)))
+        }
+        "d1" => {
+            let config = D1Config {
+                account_id: host.unwrap_or_default(),
+                database_id: database.unwrap_or_default(),
+                api_token: password.unwrap_or_default(),
+                api_base: None,
+            };
+            Ok(Box::new(D1Driver::new(config)))
+        }
+        "turso" | "libsql" => {
+            let config = TursoConfig {
+                url: host.unwrap_or_default(),
+                auth_token: password.unwrap_or_default(),
+            };
+            Ok(Box::new(TursoDriver::new(config)))
         }
         _ => Err(format!("Unsupported database type: {}", db_type)),
     }

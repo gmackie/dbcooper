@@ -19,11 +19,15 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ConnectionForm } from "@/components/ConnectionForm";
 import { EmptyState } from "@/components/EmptyState";
+import { CloudflareTree } from "@/components/CloudflareTree";
 import { ForgeGraphTree } from "@/components/ForgeGraphTree";
 import { ClickhouseIcon } from "@/components/icons/clickhouse";
+import { D1Icon } from "@/components/icons/d1";
 import { PostgresqlIcon } from "@/components/icons/postgres";
 import { RedisIcon } from "@/components/icons/redis";
+import { S3Icon } from "@/components/icons/s3";
 import { SqliteIcon } from "@/components/icons/sqlite";
+import { TursoIcon } from "@/components/icons/turso";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import {
 	AlertDialog,
@@ -57,7 +61,9 @@ import {
 	type ConnectionsExport,
 	type ForgeGraphService,
 } from "@/lib/tauri";
+import { parseCachedCloudflareResources } from "@/lib/cloudflare";
 import { parseCachedForgeGraphServices } from "@/lib/forgegraph";
+import type { CloudflareResource } from "@/lib/cloudflare";
 import { handleDragStart } from "@/lib/windowDrag";
 
 // Database type icons and colors
@@ -93,6 +99,25 @@ const getDbTypeConfig = (type: string) => {
 				gradient: "from-yellow-400/20 to-yellow-500/20",
 				borderColor: "group-hover:border-yellow-400/50",
 			};
+		case "d1":
+			return {
+				icon: D1Icon,
+				gradient: "from-orange-500/20 to-amber-500/20",
+				borderColor: "group-hover:border-orange-500/50",
+			};
+		case "turso":
+			return {
+				icon: TursoIcon,
+				gradient: "from-emerald-500/20 to-green-500/20",
+				borderColor: "group-hover:border-emerald-500/50",
+			};
+		case "s3":
+		case "r2":
+			return {
+				icon: S3Icon,
+				gradient: "from-orange-400/20 to-yellow-500/20",
+				borderColor: "group-hover:border-orange-400/50",
+			};
 		default:
 			return {
 				icon: Database,
@@ -116,9 +141,14 @@ export function Connections() {
 	const [isDeleting, setIsDeleting] = useState(false);
 	const [fgServices, setFgServices] = useState<ForgeGraphService[]>([]);
 	const [fgConfigured, setFgConfigured] = useState(false);
-	const databaseCount = fgConfigured
-		? fgServices.length + connections.length
-		: connections.length;
+	const [cfResources, setCfResources] = useState<CloudflareResource[]>([]);
+	const [cfConfigured, setCfConfigured] = useState(false);
+	const [cfD1Error, setCfD1Error] = useState<string | null>(null);
+	const [cfR2Error, setCfR2Error] = useState<string | null>(null);
+	const databaseCount =
+		(fgConfigured ? fgServices.length : 0) +
+		(cfConfigured ? cfResources.length : 0) +
+		connections.length;
 
 	const fetchConnections = async () => {
 		try {
@@ -157,9 +187,36 @@ export function Connections() {
 		}
 	};
 
+	const syncCloudflare = async () => {
+		try {
+			const configured = await api.cloudflare.isConfigured();
+			setCfConfigured(configured);
+			if (configured) {
+				const result = await api.cloudflare.sync();
+				setCfResources(parseCachedCloudflareResources(result.resources));
+				setCfD1Error(result.d1Error || null);
+				setCfR2Error(result.r2Error || null);
+			} else {
+				setCfResources([]);
+			}
+		} catch (error) {
+			console.error("Cloudflare sync failed:", error);
+			try {
+				const cached = await api.cloudflare.listCached();
+				if (cached.length > 0) {
+					setCfResources(parseCachedCloudflareResources(cached));
+					setCfConfigured(true);
+				}
+			} catch {
+				// ignore
+			}
+		}
+	};
+
 	useEffect(() => {
 		fetchConnections();
 		syncForgeGraph();
+		syncCloudflare();
 	}, []);
 
 	const handleCreateConnection = async (data: ConnectionFormData) => {
@@ -241,6 +298,7 @@ export function Connections() {
 				ssh_use_key: connection.ssh_use_key
 					? Boolean(connection.ssh_use_key)
 					: undefined,
+				extra: connection.extra ?? undefined,
 			};
 
 			await api.connections.create(duplicatedData);
@@ -378,7 +436,29 @@ export function Connections() {
 						/>
 					)}
 
-					{!fgConfigured && connections.length === 0 ? (
+					{cfConfigured && (
+						<CloudflareTree
+							resources={cfResources}
+							d1Error={cfD1Error}
+							r2Error={cfR2Error}
+							onSync={async () => {
+								try {
+									const result = await api.cloudflare.sync();
+									setCfResources(
+										parseCachedCloudflareResources(result.resources),
+									);
+									setCfD1Error(result.d1Error || null);
+									setCfR2Error(result.r2Error || null);
+								} catch (error) {
+									toast.error("Cloudflare sync failed", {
+										description: String(error),
+									});
+								}
+							}}
+						/>
+					)}
+
+					{!fgConfigured && !cfConfigured && connections.length === 0 ? (
 						<div className="flex items-center justify-center min-h-[60vh]">
 							<EmptyState
 								icon={<Database className="w-16 h-16" />}
@@ -397,17 +477,19 @@ export function Connections() {
 								]}
 							/>
 						</div>
-					) : connections.length > 0 ? (
+					) : fgConfigured || cfConfigured || connections.length > 0 ? (
 						<div className="space-y-4">
 							{/* Header */}
 							<div className="flex items-center justify-between">
 								<div>
 									<h2 className="text-xl font-semibold tracking-tight">
-										{fgConfigured ? "Local connections" : "Your Databases"}
+										{fgConfigured || cfConfigured
+											? "Local connections"
+											: "Your Databases"}
 									</h2>
 									<p className="text-xs text-muted-foreground mt-0.5">
-										{fgConfigured
-											? "Optional fallback for databases outside ForgeGraph."
+										{fgConfigured || cfConfigured
+											? "Saved connections on this machine."
 											: "Click on a connection to explore"}
 									</p>
 								</div>

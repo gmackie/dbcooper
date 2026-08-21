@@ -21,6 +21,7 @@ export interface Connection {
 	ssh_password: string;
 	ssh_key_path: string;
 	ssh_use_key: number;
+	extra?: string | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -44,6 +45,7 @@ export interface ConnectionFormData {
 	ssh_password?: string;
 	ssh_key_path?: string;
 	ssh_use_key?: boolean;
+	extra?: string | null;
 }
 
 export interface TableInfo {
@@ -186,6 +188,7 @@ export interface ExportedConnection {
 	ssh_password: string;
 	ssh_key_path: string;
 	ssh_use_key: boolean;
+	extra?: string | null;
 }
 
 export interface ConnectionsExport {
@@ -821,4 +824,141 @@ export const api = {
 
 		isConfigured: () => invoke<boolean>("forgegraph_is_configured"),
 	},
+
+	cloudflare: {
+		isConfigured: () => invoke<boolean>("cloudflare_is_configured"),
+		test: () => invoke<CloudflareTestResult>("cloudflare_test"),
+		sync: () => invoke<CloudflareSyncResult>("cloudflare_sync"),
+		listCached: () =>
+			invoke<CachedCloudflareResource[]>("cloudflare_list_cached"),
+		connect: (kind: string, resourceId: string) =>
+			invoke<{ status: string; error?: string }>("cloudflare_connect", {
+				kind,
+				resourceId,
+			}),
+		disconnect: (kind: string, resourceId: string) =>
+			invoke<void>("cloudflare_disconnect", { kind, resourceId }),
+		poolKey: (kind: string, resourceId: string) =>
+			invoke<string>("cloudflare_pool_key", { kind, resourceId }),
+	},
+
+	s3: {
+		testForm: (data: {
+			endpoint: string;
+			region: string;
+			accessKey: string;
+			secretKey: string;
+			bucket?: string;
+			pathStyle?: boolean;
+		}) =>
+			invoke<string>("s3_test_form", {
+				endpoint: data.endpoint,
+				region: data.region,
+				accessKey: data.accessKey,
+				secretKey: data.secretKey,
+				bucket: data.bucket,
+				pathStyle: data.pathStyle,
+			}),
+		testConnection: (source: S3Source) =>
+			invoke<string>("s3_test_connection", { source }),
+		listBuckets: (source: S3Source) =>
+			invoke<S3BucketInfo[]>("s3_list_buckets", { source }),
+		listObjects: (
+			source: S3Source,
+			prefix?: string,
+			continuationToken?: string,
+		) =>
+			invoke<S3ListResult>("s3_list_objects", {
+				source,
+				prefix,
+				continuationToken,
+			}),
+		headObject: (source: S3Source, key: string) =>
+			invoke<S3Object>("s3_head_object", { source, key }),
+		previewObject: (source: S3Source, key: string) =>
+			invoke<S3ObjectPreview>("s3_preview_object", { source, key }),
+		downloadObject: (source: S3Source, key: string, destPath: string) =>
+			invoke<void>("s3_download_object", { source, key, destPath }),
+		uploadObject: (source: S3Source, key: string, filePath: string) =>
+			invoke<void>("s3_upload_object", { source, key, filePath }),
+		deleteObjects: (source: S3Source, keys: string[]) =>
+			invoke<void>("s3_delete_objects", { source, keys }),
+		copyObject: (source: S3Source, fromKey: string, toKey: string) =>
+			invoke<void>("s3_copy_object", { source, fromKey, toKey }),
+		createFolder: (source: S3Source, prefix: string) =>
+			invoke<void>("s3_create_folder", { source, prefix }),
+	},
 };
+
+export interface CachedCloudflareResource {
+	id: number;
+	kind: string;
+	resourceId: string;
+	name: string;
+	accountId: string;
+	extra: string | null;
+	syncedAt: string;
+}
+
+export interface CloudflareAccountView {
+	id: string;
+	name: string;
+}
+
+export interface CloudflareTestResult {
+	accountId: string;
+	accounts: CloudflareAccountView[];
+	d1Count: number;
+	r2Count: number;
+	d1Error?: string | null;
+	r2Error?: string | null;
+	tokenId?: string | null;
+}
+
+export interface CloudflareSyncResult {
+	resources: CachedCloudflareResource[];
+	d1Error?: string | null;
+	r2Error?: string | null;
+}
+
+export interface S3Source {
+	connectionUuid?: string | null;
+	cloudflare?: boolean;
+	bucket?: string | null;
+}
+
+export interface S3BucketInfo {
+	name: string;
+	creationDate?: string | null;
+}
+
+export interface S3Object {
+	key: string;
+	size: number;
+	lastModified?: string | null;
+	etag?: string | null;
+	storageClass?: string | null;
+}
+
+export interface S3Prefix {
+	prefix: string;
+}
+
+export interface S3ListResult {
+	prefixes: S3Prefix[];
+	objects: S3Object[];
+	isTruncated: boolean;
+	nextContinuationToken?: string | null;
+}
+
+export interface S3ObjectPreview {
+	key: string;
+	contentType?: string | null;
+	size: number;
+	lastModified?: string | null;
+	isText: boolean;
+	isImage: boolean;
+	text?: string | null;
+	dataBase64?: string | null;
+	truncated: boolean;
+}

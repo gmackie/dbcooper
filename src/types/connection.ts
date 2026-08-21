@@ -1,4 +1,10 @@
-export type ConnectionType = "postgres" | "sqlite" | "redis" | "clickhouse";
+export type ConnectionType =
+	| "postgres"
+	| "sqlite"
+	| "redis"
+	| "clickhouse"
+	| "turso"
+	| "s3";
 
 export interface Connection {
 	id: number;
@@ -20,6 +26,7 @@ export interface Connection {
 	ssh_password: string;
 	ssh_key_path: string;
 	ssh_use_key: number;
+	extra?: string | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -43,4 +50,5 @@ export type ConnectionFormData = {
 	ssh_password?: string;
 	ssh_key_path?: string;
 	ssh_use_key?: boolean;
+	extra?: string | null;
 };

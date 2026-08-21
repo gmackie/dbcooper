@@ -205,6 +205,7 @@ pub async fn forgegraph_connect(
             ssh_user: None,
             ssh_password: None,
             ssh_key_path: None,
+            extra: None,
         },
         "redis" => ConnectionConfig {
             db_type: "redis".to_string(),
@@ -230,6 +231,7 @@ pub async fn forgegraph_connect(
             ssh_user: None,
             ssh_password: None,
             ssh_key_path: None,
+            extra: None,
         },
         other => {
             return Err(format!("Unsupported service kind: {}", other));

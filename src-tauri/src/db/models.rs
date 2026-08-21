@@ -24,6 +24,8 @@ pub struct Connection {
     pub ssh_password: String,
     pub ssh_key_path: String,
     pub ssh_use_key: i64,
+    #[sqlx(default)]
+    pub extra: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -57,6 +59,8 @@ pub struct ConnectionFormData {
     pub ssh_key_path: String,
     #[serde(default)]
     pub ssh_use_key: bool,
+    #[serde(default)]
+    pub extra: Option<String>,
 }
 
 fn default_db_type() -> String {
