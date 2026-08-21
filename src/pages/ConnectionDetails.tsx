@@ -33,9 +33,13 @@ import { DataTable } from "@/components/DataTable";
 import { ExpandableText } from "@/components/ExpandableText";
 import { ForgeGraphTree } from "@/components/ForgeGraphTree";
 import { ClickhouseIcon } from "@/components/icons/clickhouse";
+import { D1Icon } from "@/components/icons/d1";
 import { PostgresqlIcon } from "@/components/icons/postgres";
 import { RedisIcon } from "@/components/icons/redis";
+import { S3Icon } from "@/components/icons/s3";
 import { SqliteIcon } from "@/components/icons/sqlite";
+import { TursoIcon } from "@/components/icons/turso";
+import { S3Browser } from "@/components/s3/S3Browser";
 import { QueryResultSheet } from "@/components/QueryResultSheet";
 import { RedisKeySheet } from "@/components/RedisKeySheet";
 import { RowEditSheet } from "@/components/RowEditSheet";
@@ -118,6 +122,7 @@ import {
 	getForgeGraphDatabases,
 	parseCachedForgeGraphServices,
 } from "@/lib/forgegraph";
+import { isObjectStore, usesSqlExplorer } from "@/lib/connectionKind";
 import { handleDragStart } from "@/lib/windowDrag";
 import type { SavedQuery } from "@/types/savedQuery";
 import type { DatabaseTable } from "@/types/table";
@@ -384,14 +389,19 @@ export function ConnectionDetails() {
 	const location = useLocation();
 	const fgStateRaw = location.state as {
 		forgegraph?: boolean;
+		cloudflare?: boolean;
 		appSlug?: string;
 		appName?: string;
 		stage?: string;
 		kind?: string;
 		nodeName?: string;
 		dbType?: string;
+		resourceId?: string;
+		name?: string;
+		accountId?: string;
 	} | null;
 	const isForgeGraph = fgStateRaw?.forgegraph === true;
+	const isCloudflare = fgStateRaw?.cloudflare === true;
 	const fgState = fgStateRaw;
 	const { openSettings } = useSettings();
 	const [connection, setConnection] = useState<Connection | null>(null);
@@ -621,6 +631,14 @@ export function ConnectionDetails() {
 				return;
 			}
 
+			if (uuid.startsWith("cf:") && !isCloudflare) {
+				toast.error(
+					"Cloudflare session expired. Please reconnect from the sidebar",
+				);
+				navigate("/");
+				return;
+			}
+
 			// ForgeGraph connections are already pooled from the sidebar;
 			// build a lightweight Connection object from router state.
 			if (isForgeGraph) {
@@ -644,12 +662,43 @@ export function ConnectionDetails() {
 					ssh_password: "",
 					ssh_key_path: "",
 					ssh_use_key: 0,
+					extra: null,
 					created_at: "",
 					updated_at: "",
 				};
 				setConnection(fgConnection);
 				// Skip straight to connecting phase (pool.connect will be
 				// handled in the next effect, which also checks isForgeGraph).
+				setLoadingPhase("connecting");
+				return;
+			}
+
+			if (isCloudflare) {
+				const cfConnection: Connection = {
+					id: 0,
+					uuid,
+					type: fgState?.dbType || "d1",
+					name: fgState?.name || "Cloudflare",
+					host: fgState?.accountId || "",
+					port: 0,
+					database: fgState?.resourceId || "",
+					username: "",
+					password: "",
+					ssl: 1,
+					db_type: fgState?.dbType || "d1",
+					file_path: null,
+					ssh_enabled: 0,
+					ssh_host: "",
+					ssh_port: 22,
+					ssh_user: "",
+					ssh_password: "",
+					ssh_key_path: "",
+					ssh_use_key: 0,
+					extra: null,
+					created_at: "",
+					updated_at: "",
+				};
+				setConnection(cfConnection);
 				setLoadingPhase("connecting");
 				return;
 			}
@@ -673,7 +722,7 @@ export function ConnectionDetails() {
 		if (uuid) {
 			fetchConnection();
 		}
-	}, [uuid, navigate, isForgeGraph, fgState]);
+	}, [uuid, navigate, isForgeGraph, isCloudflare, fgState]);
 
 	const fetchSchemaOverviewData = useCallback(async () => {
 		if (!uuid) return;
@@ -746,9 +795,9 @@ export function ConnectionDetails() {
 			try {
 				// ForgeGraph connections are already pooled by the sidebar's
 				// forgegraph_connect command — skip the pool.connect call.
-				if (isForgeGraph) {
+				if (isForgeGraph || isCloudflare) {
 					setConnectionStatus("connected");
-					if (connection.type !== "redis") {
+					if (usesSqlExplorer(connection.type)) {
 						setLoadingPhase("loading-schema");
 						await fetchSchemaOverviewData();
 					}
@@ -758,7 +807,7 @@ export function ConnectionDetails() {
 
 					if (connectResult.status === "connected") {
 						setConnectionStatus("connected");
-						if (connection.type !== "redis") {
+						if (usesSqlExplorer(connection.type)) {
 							setLoadingPhase("loading-schema");
 							await fetchSchemaOverviewData();
 						}
@@ -1110,13 +1159,18 @@ export function ConnectionDetails() {
 				fgState.stage,
 				fgState.kind,
 			);
+		} else if (isCloudflare && fgState?.kind && fgState.resourceId) {
+			connectResult = await api.cloudflare.connect(
+				fgState.kind,
+				fgState.resourceId,
+			);
 		} else {
 			connectResult = await api.pool.connect(uuid);
 		}
 		if (connectResult.status === "connected") {
 			setConnectionStatus("connected");
 			toast.success("Reconnected successfully");
-			if (connection?.type !== "redis") {
+			if (usesSqlExplorer(connection?.type)) {
 				await fetchSchemaOverviewData();
 			}
 		} else {
@@ -1125,7 +1179,14 @@ export function ConnectionDetails() {
 			});
 			throw new Error(connectResult.error || "Connection failed");
 		}
-	}, [uuid, connection?.type, fetchSchemaOverviewData, isForgeGraph, fgState]);
+	}, [
+		uuid,
+		connection?.type,
+		fetchSchemaOverviewData,
+		isForgeGraph,
+		isCloudflare,
+		fgState,
+	]);
 
 	const handleCloseTab = useCallback(
 		(tabId: string) => {
@@ -2146,6 +2207,7 @@ export function ConnectionDetails() {
 				(e.metaKey || e.ctrlKey) &&
 				e.shiftKey &&
 				connection?.type !== "redis" &&
+				!isObjectStore(connection?.type) &&
 				connection?.db_type !== "clickhouse"
 			) {
 				e.preventDefault();
@@ -2157,7 +2219,8 @@ export function ConnectionDetails() {
 			if (
 				e.key === "1" &&
 				(e.metaKey || e.ctrlKey) &&
-				connection?.type !== "redis"
+				connection?.type !== "redis" &&
+				!isObjectStore(connection?.type)
 			) {
 				e.preventDefault();
 				setSidebarTab("objects");
@@ -2365,6 +2428,13 @@ export function ConnectionDetails() {
 				return <PostgresqlIcon className="h-16 w-16" />;
 			case "sqlite":
 				return <SqliteIcon className="h-16 w-16" />;
+			case "d1":
+				return <D1Icon className="h-16 w-16" />;
+			case "turso":
+				return <TursoIcon className="h-16 w-16" />;
+			case "s3":
+			case "r2":
+				return <S3Icon className="h-16 w-16" />;
 			case "redis":
 				return <RedisIcon className="h-16 w-16" />;
 			case "clickhouse":
@@ -2912,7 +2982,9 @@ export function ConnectionDetails() {
 											try {
 												const formatted = formatSQL(tab.query, {
 													language:
-														connection?.db_type === "sqlite"
+														connection?.db_type === "sqlite" ||
+														connection?.db_type === "d1" ||
+														connection?.db_type === "turso"
 															? "sqlite"
 															: connection?.db_type === "clickhouse"
 																? "sql"
@@ -3911,6 +3983,46 @@ export function ConnectionDetails() {
 				return renderEmptyState();
 		}
 	};
+
+	if (isObjectStore(connection.type)) {
+		const extra = (() => {
+			try {
+				return connection.extra ? JSON.parse(connection.extra) : {};
+			} catch {
+				return {};
+			}
+		})();
+		return (
+			<div className="flex flex-col h-screen">
+				<RedisContentHeader
+					connection={connection}
+					navigate={navigate}
+					connectionStatus={connectionStatus}
+					onReconnect={handleReconnect}
+					onStatusChange={setConnectionStatus}
+					onOpenSettings={openSettings}
+					isForgeGraph={isForgeGraph}
+					fgNodeName={fgState?.nodeName}
+				/>
+				<div className="flex-1 min-h-0">
+					<S3Browser
+						source={
+							isCloudflare
+								? {
+										cloudflare: true,
+										bucket: connection.database || undefined,
+									}
+								: {
+										connectionUuid: connection.uuid,
+										bucket: connection.database || extra.bucket || undefined,
+									}
+						}
+						initialPrefix={extra.prefix || ""}
+					/>
+				</div>
+			</div>
+		);
+	}
 
 	// Redis-specific layout without sidebar or tabs
 	if (connection.type === "redis") {

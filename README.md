@@ -1,6 +1,6 @@
 # DBcooper
 
-A database client for PostgreSQL, SQLite, Redis, and ClickHouse, built with Tauri, React, and TypeScript.
+A database client for PostgreSQL, SQLite, Redis, ClickHouse, Cloudflare D1, Turso, and S3/R2, built with Tauri, React, and TypeScript.
 
 ![dbcooper](./docs/public/images/dbcooper.png)
 ![aggregation](./docs/public/images/aggregate.png)

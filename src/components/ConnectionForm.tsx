@@ -24,10 +24,31 @@ import { PostgresqlIcon } from "@/components/icons/postgres";
 import { RedisIcon } from "@/components/icons/redis";
 import { ClickhouseIcon } from "@/components/icons/clickhouse";
 import { SqliteIcon } from "@/components/icons/sqlite";
+import { S3Icon } from "@/components/icons/s3";
+import { TursoIcon } from "@/components/icons/turso";
 import { toast } from "sonner";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Eye, EyeSlash } from "@phosphor-icons/react";
+
+function parseExtra(raw?: string | null): Record<string, string | boolean | undefined> {
+	if (!raw) return {};
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return {};
+	}
+}
+
+function s3Extra(formData: ConnectionFormData): string {
+	const current = parseExtra(formData.extra);
+	return JSON.stringify({
+		endpoint: formData.host || current.endpoint || "",
+		region: current.region || "us-east-1",
+		path_style: current.path_style ?? Boolean(formData.host),
+		prefix: current.prefix || "",
+	});
+}
 
 interface ConnectionFormProps {
 	onSubmit: (data: ConnectionFormData) => Promise<void>;
@@ -66,6 +87,18 @@ const databaseTypes: {
 		disabled: false,
 		icon: <ClickhouseIcon className="w-4 h-4" />,
 	},
+	{
+		value: "turso",
+		label: "Turso",
+		disabled: false,
+		icon: <TursoIcon className="w-4 h-4" />,
+	},
+	{
+		value: "s3",
+		label: "S3 / R2",
+		disabled: false,
+		icon: <S3Icon className="w-4 h-4" />,
+	},
 ];
 
 const defaultPorts: Record<ConnectionType, number> = {
@@ -73,6 +106,8 @@ const defaultPorts: Record<ConnectionType, number> = {
 	sqlite: 0,
 	redis: 6379,
 	clickhouse: 9000,
+	turso: 443,
+	s3: 443,
 };
 
 const defaultFormData: ConnectionFormData = {
@@ -93,6 +128,7 @@ const defaultFormData: ConnectionFormData = {
 	ssh_password: "",
 	ssh_key_path: "",
 	ssh_use_key: false,
+	extra: undefined,
 };
 
 export function ConnectionForm({
@@ -129,6 +165,7 @@ export function ConnectionForm({
 				ssh_password: initialData.ssh_password || "",
 				ssh_key_path: initialData.ssh_key_path || "",
 				ssh_use_key: initialData.ssh_use_key === 1,
+				extra: initialData.extra || undefined,
 			});
 		} else {
 			setFormData(defaultFormData);
@@ -148,10 +185,26 @@ export function ConnectionForm({
 		setIsTesting(true);
 		try {
 			// Use unified test connection for Redis, SQLite, and ClickHouse; postgres test for Postgres
+			if (formData.type === "s3") {
+				const extra = parseExtra(formData.extra);
+				const result = await api.s3.testForm({
+					endpoint: extra.endpoint || formData.host,
+					region: extra.region || "us-east-1",
+					accessKey: formData.username,
+					secretKey: formData.password,
+					bucket: formData.database || undefined,
+					pathStyle:
+						extra.path_style ??
+						Boolean(extra.endpoint || formData.host),
+				});
+				toast.success(result);
+				return;
+			}
 			const result =
 				formData.type === "redis" ||
 				formData.type === "sqlite" ||
-				formData.type === "clickhouse"
+				formData.type === "clickhouse" ||
+				formData.type === "turso"
 					? await api.database.testConnection({
 							id: 0,
 							uuid: "",
@@ -172,6 +225,7 @@ export function ConnectionForm({
 							ssh_password: formData.ssh_password || "",
 							ssh_key_path: formData.ssh_key_path || "",
 							ssh_use_key: formData.ssh_use_key ? 1 : 0,
+							extra: formData.extra || null,
 							created_at: "",
 							updated_at: "",
 						})
@@ -207,7 +261,13 @@ export function ConnectionForm({
 		e.preventDefault();
 		setIsSubmitting(true);
 		try {
-			await onSubmit(formData);
+			const payload =
+				formData.type === "s3"
+					? { ...formData, extra: s3Extra(formData), db_type: "s3" }
+					: formData.type === "turso"
+						? { ...formData, db_type: "turso", port: 443 }
+						: formData;
+			await onSubmit(payload);
 			if (!isEditMode) {
 				setFormData(defaultFormData);
 			}
@@ -288,6 +348,141 @@ export function ConnectionForm({
 							/>
 						</Field>
 
+						{formData.type === "turso" && (
+							<>
+								<Field>
+									<FieldLabel htmlFor="turso-url">Database URL</FieldLabel>
+									<Input
+										id="turso-url"
+										type="text"
+										required
+										value={formData.host}
+										onChange={(e) =>
+											setFormData({ ...formData, host: e.target.value })
+										}
+										placeholder="libsql://my-db-org.turso.io"
+									/>
+								</Field>
+								<Field>
+									<FieldLabel htmlFor="turso-token">Auth Token</FieldLabel>
+									<div className="relative">
+										<Input
+											id="turso-token"
+											type={showPassword ? "text" : "password"}
+											required
+											value={formData.password}
+											onChange={(e) =>
+												setFormData({ ...formData, password: e.target.value })
+											}
+											className="pr-10"
+										/>
+										<button
+											type="button"
+											onClick={() => setShowPassword(!showPassword)}
+											className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+										>
+											{showPassword ? (
+												<EyeSlash className="w-3 h-3" />
+											) : (
+												<Eye className="w-3 h-3" />
+											)}
+										</button>
+									</div>
+								</Field>
+							</>
+						)}
+
+						{formData.type === "s3" && (
+							<>
+								<Field>
+									<FieldLabel htmlFor="s3-endpoint">
+										Endpoint (blank for AWS)
+									</FieldLabel>
+									<Input
+										id="s3-endpoint"
+										value={formData.host}
+										onChange={(e) => {
+											const host = e.target.value;
+											setFormData({
+												...formData,
+												host,
+												extra: JSON.stringify({
+													...parseExtra(formData.extra),
+													endpoint: host,
+													path_style: Boolean(host),
+												}),
+											});
+										}}
+										placeholder="https://s3.amazonaws.com or R2/MinIO URL"
+									/>
+								</Field>
+								<Field>
+									<FieldLabel htmlFor="s3-region">Region</FieldLabel>
+									<Input
+										id="s3-region"
+										value={String(parseExtra(formData.extra).region || "us-east-1")}
+										onChange={(e) =>
+											setFormData({
+												...formData,
+												extra: JSON.stringify({
+													...parseExtra(formData.extra),
+													region: e.target.value,
+												}),
+											})
+										}
+										placeholder="us-east-1 or auto"
+									/>
+								</Field>
+								<Field>
+									<FieldLabel htmlFor="s3-bucket">Bucket (optional)</FieldLabel>
+									<Input
+										id="s3-bucket"
+										value={formData.database}
+										onChange={(e) =>
+											setFormData({ ...formData, database: e.target.value })
+										}
+									/>
+								</Field>
+								<Field>
+									<FieldLabel htmlFor="s3-access">Access Key</FieldLabel>
+									<Input
+										id="s3-access"
+										required
+										value={formData.username}
+										onChange={(e) =>
+											setFormData({ ...formData, username: e.target.value })
+										}
+									/>
+								</Field>
+								<Field>
+									<FieldLabel htmlFor="s3-secret">Secret Key</FieldLabel>
+									<div className="relative">
+										<Input
+											id="s3-secret"
+											type={showPassword ? "text" : "password"}
+											required
+											value={formData.password}
+											onChange={(e) =>
+												setFormData({ ...formData, password: e.target.value })
+											}
+											className="pr-10"
+										/>
+										<button
+											type="button"
+											onClick={() => setShowPassword(!showPassword)}
+											className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+										>
+											{showPassword ? (
+												<EyeSlash className="w-3 h-3" />
+											) : (
+												<Eye className="w-3 h-3" />
+											)}
+										</button>
+									</div>
+								</Field>
+							</>
+						)}
+
 						{/* SQLite-specific fields */}
 						{formData.type === "sqlite" && (
 							<Field>
@@ -334,7 +529,9 @@ export function ConnectionForm({
 						)}
 
 						{/* Postgres/Server-based connection fields */}
-						{formData.type !== "sqlite" && (
+						{formData.type !== "sqlite" &&
+							formData.type !== "turso" &&
+							formData.type !== "s3" && (
 							<>
 								<div className="grid grid-cols-2 gap-4">
 									<Field>

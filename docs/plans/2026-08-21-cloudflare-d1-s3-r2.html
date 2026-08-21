@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloudflare D1, Turso + S3/R2 — Implementation Plan</title>
+<style>
+  :root {
+    --bg: #100e0c;
+    --surface: #1a1612;
+    --ink: #f4ece3;
+    --muted: #a89886;
+    --line: #3a2e24;
+    --accent: #f6821f;
+    --accent-soft: #3a2412;
+    --warn: #e6c069;
+    --warn-soft: #3a3120;
+    --bad: #ef9a94;
+    --bad-soft: #3a2422;
+    --info: #8cc0e8;
+    --info-soft: #1e2f3d;
+    --hero: radial-gradient(1200px 500px at 12% -10%, #f6821f33, transparent 55%),
+            radial-gradient(900px 400px at 90% 10%, #3a2412, transparent 50%),
+            linear-gradient(180deg, #1a120c 0%, #100e0c 100%);
+    --display: "Avenir Next", Futura, "Segoe UI", sans-serif;
+    --body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 31px, #f6821f08 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, #f6821f08 32px),
+      var(--bg);
+    color: var(--ink);
+    font: 17px/1.65 var(--body);
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 0 1.5rem 5rem; }
+
+  header.hero {
+    background: var(--hero);
+    border-bottom: 1px solid var(--line);
+    padding: 4rem 1.5rem 2.5rem;
+    margin-bottom: 2rem;
+    position: relative;
+    overflow: hidden;
+  }
+  header.hero::after {
+    content: "";
+    position: absolute;
+    inset: auto -20% -40% 40%;
+    height: 280px;
+    background: radial-gradient(closest-side, #f6821f22, transparent);
+    pointer-events: none;
+  }
+  .hero-inner { max-width: 880px; margin: 0 auto; position: relative; z-index: 1; }
+  h1 { font: 800 2.6rem/1.15 var(--display); letter-spacing: -.03em; margin: 0 0 .5rem; }
+  .kicker { font: 700 .78rem var(--display); text-transform: uppercase; letter-spacing: .22em; color: var(--accent); margin-bottom: .75rem; }
+  .meta { color: var(--muted); font: .9rem var(--display); }
+  .meta span + span::before { content: "·"; margin: 0 .5rem; }
+
+  h2 { font: 700 1.35rem var(--display); margin: 2.75rem 0 .75rem; padding-bottom: .35rem; border-bottom: 1px solid var(--line); }
+  h3 { font: 650 1.05rem var(--display); margin: 1.5rem 0 .5rem; }
+  p { margin: .5rem 0 1rem; }
+
+  .badge {
+    display: inline-block; padding: .12rem .6rem; border-radius: 999px;
+    font: 600 .72rem var(--display); letter-spacing: .03em; vertical-align: middle;
+  }
+  .badge.draft    { background: var(--info-soft);   color: var(--info); }
+  .badge.approved { background: var(--accent-soft); color: var(--accent); }
+  .badge.risk     { background: var(--warn-soft);   color: var(--warn); }
+  .badge.blocked  { background: var(--bad-soft);    color: var(--bad); }
+  .badge.done     { background: var(--accent-soft); color: var(--accent); }
+  .badge.todo     { background: var(--line);        color: var(--muted); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; margin: 1.5rem 0; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; }
+  .stat b { display: block; font: 800 2rem/1.1 var(--display); color: var(--accent); }
+  .stat span { color: var(--muted); font: .8rem var(--display); text-transform: uppercase; letter-spacing: .08em; }
+
+  .progress { display: flex; gap: 4px; height: 10px; margin: .75rem 0 2rem; }
+  .progress i { flex: 1; border-radius: 5px; background: var(--line); }
+  .progress i.done { background: var(--accent); }
+  .progress i.active { background: var(--info); }
+
+  .timeline { list-style: none; margin: 1rem 0; padding: 0 0 0 1.4rem; border-left: 2px solid var(--line); }
+  .timeline li { position: relative; padding: 0 0 1.1rem; }
+  .timeline li::before {
+    content: ""; position: absolute; left: -1.75rem; top: .35rem;
+    width: .65rem; height: .65rem; border-radius: 50%;
+    background: var(--bg); border: 2px solid var(--muted);
+  }
+  .timeline li.done::before { background: var(--accent); border-color: var(--accent); }
+  .timeline li.active::before { border-color: var(--info); background: var(--info-soft); }
+  .timeline b { font-family: var(--display); }
+
+  table { width: 100%; border-collapse: collapse; margin: .75rem 0 1.25rem; font-size: .92rem; }
+  th { text-align: left; color: var(--muted); font: 600 .75rem var(--display); text-transform: uppercase; letter-spacing: .06em; }
+  th, td { padding: .5rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: .1rem .35rem; font: .85em var(--mono); }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 1rem; overflow-x: auto; font: .85rem/1.5 var(--mono); }
+  pre code { border: none; background: none; padding: 0; }
+  ul { padding-left: 1.3rem; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .goals { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 640px) { .goals { grid-template-columns: 1fr; } }
+  .goals h3 { margin-top: 0; }
+
+  details { border: 1px solid var(--line); border-radius: 10px; padding: .6rem .9rem; margin: .6rem 0; background: var(--surface); }
+  summary { cursor: pointer; font: 600 1em var(--display); }
+  .callout { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 0 10px 10px 0; padding: .75rem 1rem; margin: 1rem 0; }
+  .callout.info { border-left-color: var(--accent); background: var(--accent-soft); }
+
+  figure.diagram { margin: 1.25rem 0 .25rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.25rem; overflow-x: auto; text-align: center; }
+  figure.diagram svg { max-width: 100%; height: auto; }
+  figure.diagram figcaption { color: var(--muted); font: .85rem var(--display); margin-top: .75rem; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="hero-inner">
+    <div class="kicker">Edge storage · DBcooper</div>
+    <h1>Cloudflare D1, Turso + S3/R2 <span class="badge draft">Draft</span></h1>
+    <p class="meta">
+      <span>2026-08-21</span>
+      <span>repo: <code>dbcooper</code> @ <code>main</code></span>
+      <span>author: Grok</span>
+    </p>
+  </div>
+</header>
+<main>
+
+  <div class="stats">
+    <div class="stat"><b>6</b><span>Phases</span></div>
+    <div class="stat"><b>26</b><span>Tasks</span></div>
+    <div class="stat"><b>~32</b><span>Files touched</span></div>
+    <div class="stat"><b>~1w</b><span>Est. effort</span></div>
+  </div>
+
+  <div class="progress" aria-label="Phase progress">
+    <i></i><i></i><i></i><i></i><i></i><i></i>
+  </div>
+
+  <h2>Overview</h2>
+  <p>
+    DBcooper today speaks Postgres, SQLite, Redis, and ClickHouse, plus ForgeGraph account discovery.
+    This plan adds two remote SQLite surfaces and an object browser. Cloudflare is an account-level
+    integration: a settings token discovers D1 databases and R2 buckets. Turso is a regular connection
+    type (database URL + auth token). Both D1 and Turso reuse the SQLite UI over HTTP. Object storage
+    is a new file-manager surface that also ships as a generic S3 connection type for AWS, MinIO,
+    Garage, and hand-keyed R2.
+  </p>
+
+  <h2>Architecture</h2>
+  <figure class="diagram">
+    <svg id="plan-arch" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1321.25px; background-color: transparent;" viewBox="0 0 1321.25 352" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#plan-arch{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#ccc;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#plan-arch .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#plan-arch .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#plan-arch .error-icon{fill:#a44141;}#plan-arch .error-text{fill:#ddd;stroke:#ddd;}#plan-arch .edge-thickness-normal{stroke-width:1px;}#plan-arch .edge-thickness-thick{stroke-width:3.5px;}#plan-arch .edge-pattern-solid{stroke-dasharray:0;}#plan-arch .edge-thickness-invisible{stroke-width:0;fill:none;}#plan-arch .edge-pattern-dashed{stroke-dasharray:3;}#plan-arch .edge-pattern-dotted{stroke-dasharray:2;}#plan-arch .marker{fill:lightgrey;stroke:lightgrey;}#plan-arch .marker.cross{stroke:lightgrey;}#plan-arch svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#plan-arch p{margin:0;}#plan-arch .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#ccc;}#plan-arch .cluster-label text{fill:#F9FFFE;}#plan-arch .cluster-label span{color:#F9FFFE;}#plan-arch .cluster-label span p{background-color:transparent;}#plan-arch .label text,#plan-arch span{fill:#ccc;color:#ccc;}#plan-arch .node rect,#plan-arch .node circle,#plan-arch .node ellipse,#plan-arch .node polygon,#plan-arch .node path{fill:#1f2020;stroke:#ccc;stroke-width:1px;}#plan-arch .rough-node .label text,#plan-arch .node .label text,#plan-arch .image-shape .label,#plan-arch .icon-shape .label{text-anchor:middle;}#plan-arch .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#plan-arch .rough-node .label,#plan-arch .node .label,#plan-arch .image-shape .label,#plan-arch .icon-shape .label{text-align:center;}#plan-arch .node.clickable{cursor:pointer;}#plan-arch .root .anchor path{fill:lightgrey!important;stroke-width:0;stroke:lightgrey;}#plan-arch .arrowheadPath{fill:lightgrey;}#plan-arch .edgePath .path{stroke:lightgrey;stroke-width:1px;}#plan-arch .flowchart-link{stroke:lightgrey;fill:none;}#plan-arch .edgeLabel{background-color:hsl(0, 0%, 34.4117647059%);text-align:center;}#plan-arch .edgeLabel p{background-color:hsl(0, 0%, 34.4117647059%);}#plan-arch .edgeLabel rect{opacity:0.5;background-color:hsl(0, 0%, 34.4117647059%);fill:hsl(0, 0%, 34.4117647059%);}#plan-arch .labelBkg{background-color:rgba(87.75, 87.75, 87.75, 0.5);}#plan-arch .cluster rect{fill:hsl(180, 1.5873015873%, 28.3529411765%);stroke:rgba(255, 255, 255, 0.25);stroke-width:1px;}#plan-arch .cluster text{fill:#F9FFFE;}#plan-arch .cluster span{color:#F9FFFE;}#plan-arch div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(20, 1.5873015873%, 12.3529411765%);border:1px solid rgba(255, 255, 255, 0.25);border-radius:2px;pointer-events:none;z-index:100;}#plan-arch .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#ccc;}#plan-arch rect.text{fill:none;stroke-width:0;}#plan-arch .icon-shape,#plan-arch .image-shape{background-color:hsl(0, 0%, 34.4117647059%);text-align:center;}#plan-arch .icon-shape p,#plan-arch .image-shape p{background-color:hsl(0, 0%, 34.4117647059%);padding:2px;}#plan-arch .icon-shape .label rect,#plan-arch .image-shape .label rect{opacity:0.5;background-color:hsl(0, 0%, 34.4117647059%);fill:hsl(0, 0%, 34.4117647059%);}#plan-arch .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#plan-arch .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#plan-arch .node .neo-node{stroke:#ccc;}#plan-arch [data-look="neo"].node rect,#plan-arch [data-look="neo"].cluster rect,#plan-arch [data-look="neo"].node polygon{stroke:url(#plan-arch-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-arch [data-look="neo"].swimlane.cluster rect{filter:none;}#plan-arch [data-look="neo"].node path{stroke:url(#plan-arch-gradient);stroke-width:1px;}#plan-arch [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-arch [data-look="neo"].node .neo-line path{stroke:#ccc;filter:none;}#plan-arch [data-look="neo"].node circle{stroke:url(#plan-arch-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-arch [data-look="neo"].node circle .state-start{fill:#000000;}#plan-arch [data-look="neo"].icon-shape .icon{fill:url(#plan-arch-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-arch [data-look="neo"].icon-shape .icon-neo path{stroke:url(#plan-arch-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-arch :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="plan-arch_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-pointEnd-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="11.5" refY="7" markerUnits="userSpaceOnUse" markerWidth="10.5" markerHeight="14" orient="auto"><path d="M 0 0 L 11.5 7 L 0 14 z" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-pointStart-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="1" refY="7" markerUnits="userSpaceOnUse" markerWidth="11.5" markerHeight="14" orient="auto"><polygon points="0,7 11.5,14 11.5,0" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-circleEnd-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refY="5" refX="12.25" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-circleStart-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-2" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="plan-arch_flowchart-v2-crossEnd-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="17.7" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5;"/></marker><marker id="plan-arch_flowchart-v2-crossStart-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="-3.5" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="plan-arch-cf" data-look="classic"><rect style="" x="815.765625" y="8" width="495.328125" height="128"/><g class="cluster-label" transform="translate(995.4296875, 8)"><foreignObject width="136" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5;"><span class="nodeLabel"><p>Cloudflare account</p></span></div></foreignObject></g></g><g class="cluster" id="plan-arch-local" data-look="classic"><rect style="" x="8" y="8" width="777.546875" height="128"/><g class="cluster-label" transform="translate(332.8203125, 8)"><foreignObject width="127.90625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5;"><span class="nodeLabel"><p>Local connections</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M446.883,99L446.883,105.167C446.883,111.333,446.883,123.667,446.883,134C446.883,144.333,446.883,152.667,446.883,160.333C446.883,168,446.883,175,446.883,178.5L446.883,182" id="plan-arch-L_Turso_TDrv_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Turso_TDrv_0" data-points="W3sieCI6NDQ2Ljg4MjgxMjUsInkiOjk5fSx7IngiOjQ0Ni44ODI4MTI1LCJ5IjoxMzZ9LHsieCI6NDQ2Ljg4MjgxMjUsInkiOjE2MX0seyJ4Ijo0NDYuODgyODEyNSwieSI6MTg2fV0=" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M927.813,99L927.813,105.167C927.813,111.333,927.813,123.667,927.813,134C927.813,144.333,927.813,152.667,927.813,160.333C927.813,168,927.813,175,927.813,178.5L927.813,182" id="plan-arch-L_D1_D1Drv_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D1_D1Drv_0" data-points="W3sieCI6OTI3LjgxMjUsInkiOjk5fSx7IngiOjkyNy44MTI1LCJ5IjoxMzZ9LHsieCI6OTI3LjgxMjUsInkiOjE2MX0seyJ4Ijo5MjcuODEyNSwieSI6MTg2fV0=" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M426,240L422.777,244.167C419.555,248.333,413.109,256.667,411.25,264.378C409.391,272.089,412.117,279.178,413.48,282.722L414.844,286.267" id="plan-arch-L_TDrv_SqliteUI_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_TDrv_SqliteUI_0" data-points="W3sieCI6NDI2LCJ5IjoyNDB9LHsieCI6NDA2LjY2NDA2MjUsInkiOjI2NX0seyJ4Ijo0MTYuMjc5NDQ3MTE1Mzg0NjQsInkiOjI5MH1d" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M867.023,227.027L839.596,233.356C812.168,239.685,757.313,252.342,695.065,265.236C632.818,278.13,563.179,291.26,528.36,297.826L493.54,304.391" id="plan-arch-L_D1Drv_SqliteUI_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D1Drv_SqliteUI_0" data-points="W3sieCI6ODY3LjAyMzQzNzUsInkiOjIyNy4wMjY4NjcyNzU2NTgyNX0seyJ4Ijo3MDIuNDU3MDMxMjUsInkiOjI2NX0seyJ4Ijo0ODkuNjA5Mzc1LCJ5IjozMDUuMTMxODM1NzU3Njg3M31d" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M506.684,240L515.912,244.167C525.141,248.333,543.598,256.667,559.85,264.68C576.102,272.693,590.149,280.386,597.173,284.232L604.197,288.079" id="plan-arch-L_TDrv_Hrana_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_TDrv_Hrana_0" data-points="W3sieCI6NTA2LjY4MzU5Mzc1LCJ5IjoyNDB9LHsieCI6NTYyLjA1NDY4NzUsInkiOjI2NX0seyJ4Ijo2MDcuNzA1MjI4MzY1Mzg0NiwieSI6MjkwfV0=" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M933.005,240L933.806,244.167C934.607,248.333,936.21,256.667,937.011,264.333C937.813,272,937.813,279,937.813,282.5L937.813,286" id="plan-arch-L_D1Drv_CFAPI_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D1Drv_CFAPI_0" data-points="W3sieCI6OTMzLjAwNDgwNzY5MjMwNzcsInkiOjI0MH0seyJ4Ijo5MzcuODEyNSwieSI6MjY1fSx7IngiOjkzNy44MTI1LCJ5IjoyOTB9XQ==" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M670.656,99L670.656,105.167C670.656,111.333,670.656,123.667,670.656,134C670.656,144.333,670.656,152.667,745.687,164.105C820.717,175.542,970.778,190.085,1045.809,197.356L1120.839,204.627" id="plan-arch-L_S3Conn_S3Client_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S3Conn_S3Client_0" data-points="W3sieCI6NjcwLjY1NjI1LCJ5Ijo5OX0seyJ4Ijo2NzAuNjU2MjUsInkiOjEzNn0seyJ4Ijo2NzAuNjU2MjUsInkiOjE2MX0seyJ4IjoxMTI0LjgyMDMxMjUsInkiOjIwNS4wMTMyMjAzNDg4NTQxM31d" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M1207.234,99L1207.234,105.167C1207.234,111.333,1207.234,123.667,1207.234,134C1207.234,144.333,1207.234,152.667,1207.234,160.333C1207.234,168,1207.234,175,1207.234,178.5L1207.234,182" id="plan-arch-L_R2_S3Client_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R2_S3Client_0" data-points="W3sieCI6MTIwNy4yMzQzNzUsInkiOjk5fSx7IngiOjEyMDcuMjM0Mzc1LCJ5IjoxMzZ9LHsieCI6MTIwNy4yMzQzNzUsInkiOjE2MX0seyJ4IjoxMjA3LjIzNDM3NSwieSI6MTg2fV0=" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/><path d="M1207.234,240L1207.234,244.167C1207.234,248.333,1207.234,256.667,1207.234,264.333C1207.234,272,1207.234,279,1207.234,282.5L1207.234,286" id="plan-arch-L_S3Client_ObjectStore_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S3Client_ObjectStore_0" data-points="W3sieCI6MTIwNy4yMzQzNzUsInkiOjI0MH0seyJ4IjoxMjA3LjIzNDM3NSwieSI6MjY1fSx7IngiOjEyMDcuMjM0Mzc1LCJ5IjoyOTB9XQ==" data-look="classic" marker-end="url(#plan-arch_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_Turso_TDrv_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D1_D1Drv_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_TDrv_SqliteUI_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D1Drv_SqliteUI_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_TDrv_Hrana_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D1Drv_CFAPI_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_S3Conn_S3Client_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_R2_S3Client_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_S3Client_ObjectStore_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="plan-arch-flowchart-Existing-0" data-look="classic" transform="translate(173, 72)"><rect class="basic label-container" style="" x="-130" y="-39" width="260" height="78"/><g class="label" style="" transform="translate(-100, -24)"><rect/><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Postgres SQLite Redis ClickHouse</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-Turso-1" data-look="classic" transform="translate(446.8828125, 72)"><rect class="basic label-container" style="" x="-93.8828125" y="-27" width="187.765625" height="54"/><g class="label" style="" transform="translate(-63.8828125, -12)"><rect/><foreignObject width="127.765625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Turso URL + token</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-S3Conn-2" data-look="classic" transform="translate(670.65625, 72)"><rect class="basic label-container" style="" x="-79.890625" y="-27" width="159.78125" height="54"/><g class="label" style="" transform="translate(-49.890625, -12)"><rect/><foreignObject width="99.78125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>S3 connection</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-D1-3" data-look="classic" transform="translate(927.8125, 72)"><rect class="basic label-container" style="" x="-77.046875" y="-27" width="154.09375" height="54"/><g class="label" style="" transform="translate(-47.046875, -12)"><rect/><foreignObject width="94.09375" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>D1 databases</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-R2-4" data-look="classic" transform="translate(1207.234375, 72)"><rect class="basic label-container" style="" x="-68.859375" y="-27" width="137.71875" height="54"/><g class="label" style="" transform="translate(-38.859375, -12)"><rect/><foreignObject width="77.71875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>R2 buckets</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-TDrv-6" data-look="classic" transform="translate(446.8828125, 213)"><rect class="basic label-container" style="" x="-70.3125" y="-27" width="140.625" height="54"/><g class="label" style="" transform="translate(-40.3125, -12)"><rect/><foreignObject width="80.625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>TursoDriver</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-D1Drv-8" data-look="classic" transform="translate(927.8125, 213)"><rect class="basic label-container" style="" x="-60.7890625" y="-27" width="121.578125" height="54"/><g class="label" style="" transform="translate(-30.7890625, -12)"><rect/><foreignObject width="61.578125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>D1Driver</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-SqliteUI-10" data-look="classic" transform="translate(426.6640625, 317)"><rect class="basic label-container" style="" x="-62.9453125" y="-27" width="125.890625" height="54"/><g class="label" style="" transform="translate(-32.9453125, -12)"><rect/><foreignObject width="65.890625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>SQLite UI</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-Hrana-14" data-look="classic" transform="translate(657.0078125, 317)"><rect class="basic label-container" style="" x="-117.3984375" y="-27" width="234.796875" height="54"/><g class="label" style="" transform="translate(-87.3984375, -12)"><rect/><foreignObject width="174.796875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>db.turso.io /v2/pipeline</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-CFAPI-16" data-look="classic" transform="translate(937.8125, 317)"><rect class="basic label-container" style="" x="-113.40625" y="-27" width="226.8125" height="54"/><g class="label" style="" transform="translate(-83.40625, -12)"><rect/><foreignObject width="166.8125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>api.cloudflare.com /d1</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-S3Client-18" data-look="classic" transform="translate(1207.234375, 213)"><rect class="basic label-container" style="" x="-82.4140625" y="-27" width="164.828125" height="54"/><g class="label" style="" transform="translate(-52.4140625, -12)"><rect/><foreignObject width="104.828125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>S3 client SigV4</p></span></div></foreignObject></g></g><g class="node default" id="plan-arch-flowchart-ObjectStore-22" data-look="classic" transform="translate(1207.234375, 317)"><rect class="basic label-container" style="" x="-106.015625" y="-27" width="212.03125" height="54"/><g class="label" style="" transform="translate(-76.015625, -12)"><rect/><foreignObject width="152.03125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>AWS MinIO Garage R2</p></span></div></foreignObject></g></g></g></g></g><defs><filter id="plan-arch-drop-shadow" height="130%" width="130%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-opacity="0.06" flood-color="#FFFFFF"/></filter></defs><defs><filter id="plan-arch-drop-shadow-small" height="150%" width="150%"><feDropShadow dx="2" dy="2" stdDeviation="0" flood-opacity="0.06" flood-color="#FFFFFF"/></filter></defs><linearGradient id="plan-arch-gradient" gradientUnits="objectBoundingBox" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#cccccc" stop-opacity="1"/><stop offset="100%" stop-color="hsl(180, 0%, 18.3529411765%)" stop-opacity="1"/></linearGradient></svg>
+    <figcaption>Cloudflare discovers D1 and R2. Turso and S3 are local connection types. D1 and Turso share the SQLite UI.</figcaption>
+  </figure>
+  <details class="mermaid-source">
+    <summary>Diagram source (mermaid)</summary>
+    <pre><code>flowchart TB
+  subgraph local [Local connections]
+    Existing["Postgres SQLite Redis ClickHouse"]
+    Turso["Turso URL + token"]
+    S3Conn["S3 connection"]
+  end
+
+  subgraph cf [Cloudflare account]
+    D1["D1 databases"]
+    R2["R2 buckets"]
+  end
+
+  Turso --&gt; TDrv["TursoDriver"]
+  D1 --&gt; D1Drv["D1Driver"]
+  TDrv --&gt; SqliteUI["SQLite UI"]
+  D1Drv --&gt; SqliteUI
+  TDrv --&gt; Hrana["db.turso.io /v2/pipeline"]
+  D1Drv --&gt; CFAPI["api.cloudflare.com /d1"]
+
+  S3Conn --&gt; S3Client["S3 client SigV4"]
+  R2 --&gt; S3Client
+  S3Client --&gt; ObjectStore["AWS MinIO Garage R2"]</code></pre>
+  </details>
+
+  <figure class="diagram">
+    <svg id="plan-ui" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 360.598px; background-color: transparent;" viewBox="0 0 360.59765625 840" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#plan-ui{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#ccc;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#plan-ui .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#plan-ui .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#plan-ui .error-icon{fill:#a44141;}#plan-ui .error-text{fill:#ddd;stroke:#ddd;}#plan-ui .edge-thickness-normal{stroke-width:1px;}#plan-ui .edge-thickness-thick{stroke-width:3.5px;}#plan-ui .edge-pattern-solid{stroke-dasharray:0;}#plan-ui .edge-thickness-invisible{stroke-width:0;fill:none;}#plan-ui .edge-pattern-dashed{stroke-dasharray:3;}#plan-ui .edge-pattern-dotted{stroke-dasharray:2;}#plan-ui .marker{fill:lightgrey;stroke:lightgrey;}#plan-ui .marker.cross{stroke:lightgrey;}#plan-ui svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#plan-ui p{margin:0;}#plan-ui .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#ccc;}#plan-ui .cluster-label text{fill:#F9FFFE;}#plan-ui .cluster-label span{color:#F9FFFE;}#plan-ui .cluster-label span p{background-color:transparent;}#plan-ui .label text,#plan-ui span{fill:#ccc;color:#ccc;}#plan-ui .node rect,#plan-ui .node circle,#plan-ui .node ellipse,#plan-ui .node polygon,#plan-ui .node path{fill:#1f2020;stroke:#ccc;stroke-width:1px;}#plan-ui .rough-node .label text,#plan-ui .node .label text,#plan-ui .image-shape .label,#plan-ui .icon-shape .label{text-anchor:middle;}#plan-ui .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#plan-ui .rough-node .label,#plan-ui .node .label,#plan-ui .image-shape .label,#plan-ui .icon-shape .label{text-align:center;}#plan-ui .node.clickable{cursor:pointer;}#plan-ui .root .anchor path{fill:lightgrey!important;stroke-width:0;stroke:lightgrey;}#plan-ui .arrowheadPath{fill:lightgrey;}#plan-ui .edgePath .path{stroke:lightgrey;stroke-width:1px;}#plan-ui .flowchart-link{stroke:lightgrey;fill:none;}#plan-ui .edgeLabel{background-color:hsl(0, 0%, 34.4117647059%);text-align:center;}#plan-ui .edgeLabel p{background-color:hsl(0, 0%, 34.4117647059%);}#plan-ui .edgeLabel rect{opacity:0.5;background-color:hsl(0, 0%, 34.4117647059%);fill:hsl(0, 0%, 34.4117647059%);}#plan-ui .labelBkg{background-color:rgba(87.75, 87.75, 87.75, 0.5);}#plan-ui .cluster rect{fill:hsl(180, 1.5873015873%, 28.3529411765%);stroke:rgba(255, 255, 255, 0.25);stroke-width:1px;}#plan-ui .cluster text{fill:#F9FFFE;}#plan-ui .cluster span{color:#F9FFFE;}#plan-ui div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(20, 1.5873015873%, 12.3529411765%);border:1px solid rgba(255, 255, 255, 0.25);border-radius:2px;pointer-events:none;z-index:100;}#plan-ui .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#ccc;}#plan-ui rect.text{fill:none;stroke-width:0;}#plan-ui .icon-shape,#plan-ui .image-shape{background-color:hsl(0, 0%, 34.4117647059%);text-align:center;}#plan-ui .icon-shape p,#plan-ui .image-shape p{background-color:hsl(0, 0%, 34.4117647059%);padding:2px;}#plan-ui .icon-shape .label rect,#plan-ui .image-shape .label rect{opacity:0.5;background-color:hsl(0, 0%, 34.4117647059%);fill:hsl(0, 0%, 34.4117647059%);}#plan-ui .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#plan-ui .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#plan-ui .node .neo-node{stroke:#ccc;}#plan-ui [data-look="neo"].node rect,#plan-ui [data-look="neo"].cluster rect,#plan-ui [data-look="neo"].node polygon{stroke:url(#plan-ui-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-ui [data-look="neo"].swimlane.cluster rect{filter:none;}#plan-ui [data-look="neo"].node path{stroke:url(#plan-ui-gradient);stroke-width:1px;}#plan-ui [data-look="neo"].node .outer-path{filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-ui [data-look="neo"].node .neo-line path{stroke:#ccc;filter:none;}#plan-ui [data-look="neo"].node circle{stroke:url(#plan-ui-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-ui [data-look="neo"].node circle .state-start{fill:#000000;}#plan-ui [data-look="neo"].icon-shape .icon{fill:url(#plan-ui-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-ui [data-look="neo"].icon-shape .icon-neo path{stroke:url(#plan-ui-gradient);filter:drop-shadow( 1px 2px 2px rgba(185,185,185,1));}#plan-ui :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="plan-ui_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-pointEnd-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="11.5" refY="7" markerUnits="userSpaceOnUse" markerWidth="10.5" markerHeight="14" orient="auto"><path d="M 0 0 L 11.5 7 L 0 14 z" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-pointStart-margin" class="marker flowchart-v2" viewBox="0 0 11.5 14" refX="1" refY="7" markerUnits="userSpaceOnUse" markerWidth="11.5" markerHeight="14" orient="auto"><polygon points="0,7 11.5,14 11.5,0" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-circleEnd-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refY="5" refX="12.25" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-circleStart-margin" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-2" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 0; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="plan-ui_flowchart-v2-crossEnd-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="17.7" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5;"/></marker><marker id="plan-ui_flowchart-v2-crossStart-margin" class="marker cross flowchart-v2" viewBox="0 0 15 15" refX="-3.5" refY="7.5" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" orient="auto"><path d="M 1,1 L 14,14 M 1,14 L 14,1" class="arrowMarkerPath" style="stroke-width: 2.5; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"/><g class="edgeLabels"/><g class="nodes"><g class="root" transform="translate(61.947265625, 0)"><g class="clusters"><g class="cluster" id="plan-ui-objects" data-look="classic"><rect style="" x="8" y="8" width="220.703125" height="387"/><g class="cluster-label" transform="translate(65.265625, 8)"><foreignObject width="106.171875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5;"><span class="nodeLabel"><p>Object storage</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M118.352,99.5L118.352,105.75C118.352,112,118.352,124.5,118.352,136.333C118.352,148.167,118.352,159.333,118.352,164.917L118.352,170.5" id="plan-ui-L_Bucket_Browser_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Bucket_Browser_0" data-points="W3sieCI6MTE4LjM1MTU2MjUsInkiOjk5LjV9LHsieCI6MTE4LjM1MTU2MjUsInkiOjEzN30seyJ4IjoxMTguMzUxNTYyNSwieSI6MTc0LjV9XQ==" data-look="classic" marker-end="url(#plan-ui_flowchart-v2-pointEnd)"/><path d="M118.352,228.5L118.352,234.75C118.352,241,118.352,253.5,118.352,265.333C118.352,277.167,118.352,288.333,118.352,293.917L118.352,299.5" id="plan-ui-L_Browser_S3API_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Browser_S3API_0" data-points="W3sieCI6MTE4LjM1MTU2MjUsInkiOjIyOC41fSx7IngiOjExOC4zNTE1NjI1LCJ5IjoyNjZ9LHsieCI6MTE4LjM1MTU2MjUsInkiOjMwMy41fV0=" data-look="classic" marker-end="url(#plan-ui_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_Bucket_Browser_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_Browser_S3API_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="plan-ui-flowchart-Bucket-6" data-look="classic" transform="translate(118.3515625, 72.5)"><rect class="basic label-container" style="" x="-75.3515625" y="-27" width="150.703125" height="54"/><g class="label" style="" transform="translate(-45.3515625, -12)"><rect/><foreignObject width="90.703125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Open bucket</p></span></div></foreignObject></g></g><g class="node default" id="plan-ui-flowchart-Browser-7" data-look="classic" transform="translate(118.3515625, 201.5)"><rect class="basic label-container" style="" x="-66.640625" y="-27" width="133.28125" height="54"/><g class="label" style="" transform="translate(-36.640625, -12)"><rect/><foreignObject width="73.28125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>S3Browser</p></span></div></foreignObject></g></g><g class="node default" id="plan-ui-flowchart-S3API-9" data-look="classic" transform="translate(118.3515625, 330.5)"><rect class="basic label-container" style="" x="-72.8671875" y="-27" width="145.734375" height="54"/><g class="label" style="" transform="translate(-42.8671875, -12)"><rect/><foreignObject width="85.734375" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>SigV4 S3 API</p></span></div></foreignObject></g></g></g></g><g class="root" transform="translate(0, 437)"><g class="clusters"><g class="cluster" id="plan-ui-remote" data-look="classic"><rect style="" x="8" y="8" width="344.59765625" height="387"/><g class="cluster-label" transform="translate(127.603515625, 8)"><foreignObject width="105.390625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5;"><span class="nodeLabel"><p>Remote SQLite</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M109.055,99.5L109.055,105.75C109.055,112,109.055,124.5,115.241,136.544C121.427,148.589,133.8,160.177,139.986,165.971L146.172,171.766" id="plan-ui-L_D1_UI_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D1_UI_0" data-points="W3sieCI6MTA5LjA1NDY4NzUsInkiOjk5LjV9LHsieCI6MTA5LjA1NDY4NzUsInkiOjEzN30seyJ4IjoxNDkuMDkxNDc4OTI0NDE4NiwieSI6MTc0LjV9XQ==" data-look="classic" marker-end="url(#plan-ui_flowchart-v2-pointEnd)"/><path d="M246.781,99.5L246.781,105.75C246.781,112,246.781,124.5,240.595,136.544C234.409,148.589,222.036,160.177,215.85,165.971L209.664,171.766" id="plan-ui-L_Turso_UI_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Turso_UI_0" data-points="W3sieCI6MjQ2Ljc4MTI1LCJ5Ijo5OS41fSx7IngiOjI0Ni43ODEyNSwieSI6MTM3fSx7IngiOjIwNi43NDQ0NTg1NzU1ODE0LCJ5IjoxNzQuNX1d" data-look="classic" marker-end="url(#plan-ui_flowchart-v2-pointEnd)"/><path d="M177.918,228.5L177.918,234.75C177.918,241,177.918,253.5,177.918,265.333C177.918,277.167,177.918,288.333,177.918,293.917L177.918,299.5" id="plan-ui-L_UI_Trait_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_UI_Trait_0" data-points="W3sieCI6MTc3LjkxNzk2ODc1LCJ5IjoyMjguNX0seyJ4IjoxNzcuOTE3OTY4NzUsInkiOjI2Nn0seyJ4IjoxNzcuOTE3OTY4NzUsInkiOjMwMy41fV0=" data-look="classic" marker-end="url(#plan-ui_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_D1_UI_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_Turso_UI_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_UI_Trait_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="plan-ui-flowchart-D1-0" data-look="classic" transform="translate(109.0546875, 72.5)"><rect class="basic label-container" style="" x="-39.1015625" y="-27" width="78.203125" height="54"/><g class="label" style="" transform="translate(-9.1015625, -12)"><rect/><foreignObject width="18.203125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>D1</p></span></div></foreignObject></g></g><g class="node default" id="plan-ui-flowchart-UI-1" data-look="classic" transform="translate(177.91796875, 201.5)"><rect class="basic label-container" style="" x="-93.0078125" y="-27" width="186.015625" height="54"/><g class="label" style="" transform="translate(-63.0078125, -12)"><rect/><foreignObject width="126.015625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Existing SQLite UI</p></span></div></foreignObject></g></g><g class="node default" id="plan-ui-flowchart-Turso-2" data-look="classic" transform="translate(246.78125, 72.5)"><rect class="basic label-container" style="" x="-48.625" y="-27" width="97.25" height="54"/><g class="label" style="" transform="translate(-18.625, -12)"><rect/><foreignObject width="37.25" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Turso</p></span></div></foreignObject></g></g><g class="node default" id="plan-ui-flowchart-Trait-5" data-look="classic" transform="translate(177.91796875, 330.5)"><rect class="basic label-container" style="" x="-84.4375" y="-27" width="168.875" height="54"/><g class="label" style="" transform="translate(-54.4375, -12)"><rect/><foreignObject width="108.875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>DatabaseDriver</p></span></div></foreignObject></g></g></g></g></g></g></g><defs><filter id="plan-ui-drop-shadow" height="130%" width="130%"><feDropShadow dx="4" dy="4" stdDeviation="0" flood-opacity="0.06" flood-color="#FFFFFF"/></filter></defs><defs><filter id="plan-ui-drop-shadow-small" height="150%" width="150%"><feDropShadow dx="2" dy="2" stdDeviation="0" flood-opacity="0.06" flood-color="#FFFFFF"/></filter></defs><linearGradient id="plan-ui-gradient" gradientUnits="objectBoundingBox" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#cccccc" stop-opacity="1"/><stop offset="100%" stop-color="hsl(180, 0%, 18.3529411765%)" stop-opacity="1"/></linearGradient></svg>
+    <figcaption>D1 and Turso both mount the SQLite UI. S3/R2 is a dedicated file manager.</figcaption>
+  </figure>
+  <details class="mermaid-source">
+    <summary>Diagram source (mermaid)</summary>
+    <pre><code>flowchart LR
+  subgraph remote [Remote SQLite]
+    D1["D1"] --&gt; UI["Existing SQLite UI"]
+    Turso["Turso"] --&gt; UI
+    UI --&gt; Trait["DatabaseDriver"]
+  end
+
+  subgraph objects [Object storage]
+    Bucket["Open bucket"] --&gt; Browser["S3Browser"]
+    Browser --&gt; S3API["SigV4 S3 API"]
+  end</code></pre>
+  </details>
+
+  <h2>Goals &amp; Non-goals</h2>
+  <div class="goals">
+    <div class="card">
+      <h3>Goals</h3>
+      <ul>
+        <li>Save a Cloudflare API token (and account ID) in Settings, test it, and sync resources.</li>
+        <li>Sidebar section listing D1 databases and R2 buckets, ForgeGraph-style.</li>
+        <li>D1 uses the existing SQLite UI: tables, grid, query editor, row insert/edit, schema viz.</li>
+        <li>Turso as an Add-connection type (libSQL/HTTPS URL + database auth token) with that same SQLite UI.</li>
+        <li>Generic S3 connection type plus an object browser: browse, preview, upload, download, delete, copy/rename.</li>
+        <li>R2 discovered from the token opens in that same browser.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Non-goals</h3>
+      <ul>
+        <li>Standalone “Add D1 connection” type (token is account-level).</li>
+        <li>Turso Platform API org discovery, creating databases, embedded replicas, or Turso Sync.</li>
+        <li>Create/delete D1 databases, wrangler import, or D1 time travel.</li>
+        <li>Create/delete S3 buckets, versioning, lifecycle, CORS, or presigned-upload widgets.</li>
+        <li>Multiple Cloudflare accounts at once.</li>
+        <li>Workers bindings, Hyperdrive, or KV/Queues.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Decisions</h2>
+  <div class="card">
+    <ul>
+      <li><strong>Hybrid product model.</strong> Cloudflare is an account, not a connection type. S3 and Turso are local connection types. D1 is discovery-only in v1.</li>
+      <li><strong>Cloudflare token never lands on connection rows.</strong> Same as ForgeGraph: settings hold the secret; cache stores metadata only. Turso’s database token <em>does</em> live on the connection row — that is how Turso auth works.</li>
+      <li><strong>R2 S3 credentials.</strong> Happy path derives Access Key ID from <code>GET /user/tokens/verify</code> (token id) and Secret from SHA-256 of the token value. Optional explicit R2 keys in Settings if derivation fails (scoped Object Read tokens, account tokens, etc.).</li>
+      <li><strong>D1 and Turso are <code>DatabaseDriver</code>s.</strong> Both reuse SQLite catalog SQL and the SQLite UI. D1 talks Cloudflare REST; Turso talks Hrana over HTTP (<code>/v2/pipeline</code>) with reqwest — no native <code>libsql</code> crate in v1.</li>
+      <li><strong>S3 is not a <code>DatabaseDriver</code>.</strong> Separate Tauri commands. <code>ConnectionDetails</code> is already too large — new component tree under <code>src/components/s3/</code>.</li>
+      <li><strong>New <code>extra</code> JSON column</strong> on <code>connections</code> for S3 region, endpoint, path-style, prefix. Access key / secret stay in username / password; bucket in <code>database</code>. Turso stores the URL on <code>host</code> and the auth token on <code>password</code>.</li>
+    </ul>
+  </div>
+
+  <h2>Milestones</h2>
+  <ul class="timeline">
+    <li class="active"><b>Phase 1 — Cloudflare account</b><br>Settings token, verify, resource sync, sidebar.</li>
+    <li><b>Phase 2 — D1 driver</b><br>HTTP SQLite driver, pool key, existing UI.</li>
+    <li><b>Phase 3 — Turso connection type</b><br>URL + token form, Hrana HTTP driver, same SQLite UI.</li>
+    <li><b>Phase 4 — S3 client + connection type</b><br>SigV4 client, Add-connection form, extra JSON.</li>
+    <li><b>Phase 5 — Object browser</b><br>File manager for generic S3 and discovered R2.</li>
+    <li><b>Phase 6 — Tests and polish</b><br>Mocked HTTP tests, icons, error copy, required-permission docs in Settings.</li>
+  </ul>
+
+  <h2>Phase 1 — Cloudflare account <span class="badge todo">Todo</span></h2>
+  <p>Make Cloudflare a first-class settings integration that can list D1 databases and R2 buckets, modeled on ForgeGraph.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Migration: <code>cloudflare_resources</code> cache + <code>connections.extra</code></td>
+        <td><code>src-tauri/migrations/006_cloudflare_s3.sql</code></td>
+        <td>App launches; existing connections still load</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Cloudflare HTTP client: verify token, list accounts, list D1, list R2 buckets</td>
+        <td><code>src-tauri/src/cloudflare.rs</code></td>
+        <td>Unit tests against a mock HTTP server</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Tauri commands: <code>cloudflare_is_configured</code>, <code>cloudflare_test</code>, <code>cloudflare_sync</code>, <code>cloudflare_list_cached</code></td>
+        <td><code>src-tauri/src/commands/cloudflare.rs</code>, <code>lib.rs</code></td>
+        <td>Sync upserts cache; token never written to cache</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Settings UI: token, account ID (auto-fill from <code>/accounts</code> if one), optional R2 keys, Test button</td>
+        <td><code>src/components/SettingsForm.tsx</code>, <code>src/lib/tauri.ts</code></td>
+        <td>Test shows “N D1, M R2” or a permission error</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Sidebar <code>CloudflareTree</code>: D1 group + R2 group, Sync button, only when configured</td>
+        <td><code>src/components/CloudflareTree.tsx</code>, <code>src/pages/Connections.tsx</code></td>
+        <td>Lists cached names; empty state explains token permissions</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>Settings keys, permissions, cache shape</summary>
+    <p>Settings keys: <code>cloudflare_api_token</code>, <code>cloudflare_account_id</code>, optional <code>cloudflare_r2_access_key</code> / <code>cloudflare_r2_secret_key</code>.</p>
+    <p>Required token permission groups (document in Settings helper text):</p>
+    <ul>
+      <li>D1 Read + D1 Write — query and mutate D1</li>
+      <li>Workers R2 Storage Read (Write if upload/delete) — list buckets; S3 object ops also need the token to be usable as R2 S3 credentials</li>
+    </ul>
+    <p>Cache table:</p>
+    <pre><code>CREATE TABLE cloudflare_resources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,          -- 'd1' | 'r2'
+  resource_id TEXT NOT NULL,   -- D1 uuid or bucket name
+  name TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  extra TEXT,                  -- JSON metadata (size, created_at, jurisdiction)
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(kind, account_id, resource_id)
+);
+
+ALTER TABLE connections ADD COLUMN extra TEXT;</code></pre>
+    <p>Account ID: on Test, call <code>GET /accounts</code>. One account → save it. Multiple → picker. User can still paste an ID.</p>
+  </details>
+
+  <h2>Phase 2 — D1 driver <span class="badge todo">Todo</span></h2>
+  <p>Treat D1 as SQLite over HTTP so Connection Details does not grow a third query UI.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>D1Driver</code> implementing <code>DatabaseDriver</code> via REST query</td>
+        <td><code>src-tauri/src/database/d1.rs</code>, <code>database/mod.rs</code></td>
+        <td>list_tables / get_table_data / execute_query against a mock D1 JSON payload</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Pool manager: <code>db_type = "d1"</code>, synthetic key <code>cf:d1:{account}:{uuid}</code></td>
+        <td><code>pool_manager.rs</code>, <code>commands/database.rs</code>, <code>commands/cloudflare.rs</code></td>
+        <td>Connect reads token from settings, not from the connection row</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Open D1 from sidebar with navigation state (mirror ForgeGraph)</td>
+        <td><code>CloudflareTree.tsx</code>, <code>ConnectionDetails.tsx</code></td>
+        <td>Object explorer, grid, query editor, row edit work; functions hidden; no SSH/host</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Surface D1 API errors (duration / 10MB / rate limit) in the query editor</td>
+        <td><code>d1.rs</code>, <code>ConnectionDetails.tsx</code></td>
+        <td>Failed SELECT shows Cloudflare message, not a generic panic</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>D1 query contract and SQL reuse</summary>
+    <p>Endpoint: <code>POST https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database/{database_id}/query</code></p>
+    <p>Body: <code>{"sql": "...", "params": [...]}</code>. Response <code>result[0].results</code> is an array of objects; <code>meta.changes</code> / <code>meta.duration</code> map onto <code>QueryResult</code>.</p>
+    <p>Reuse existing SQLite catalog SQL in <code>database/queries/sqlite.rs</code> (sqlite_master, pragma_table_info, foreign keys, indexes). D1 is SQLite-compatible enough for these.</p>
+    <p>Table pagination stays in SQL (<code>LIMIT/OFFSET</code>) so we do not pull whole tables over HTTP. Query editor runs raw SQL as today.</p>
+    <p>Row insert/update/delete already generate SQL in the frontend; the driver just executes it. No D1-specific grid.</p>
+    <pre><code>pub struct D1Config {
+    pub account_id: String,
+    pub database_id: String,
+    pub api_token: String,
+}</code></pre>
+  </details>
+
+  <h2>Phase 3 — Turso connection type <span class="badge todo">Todo</span></h2>
+  <p>Turso is the other remote SQLite. Unlike D1, people already have a database URL and a per-database token, so it is a normal Add-connection type — not a Settings account.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>TursoDriver</code> via Hrana HTTP <code>/v2/pipeline</code> (reqwest, no native libsql crate)</td>
+        <td><code>src-tauri/src/database/turso.rs</code>, <code>database/mod.rs</code></td>
+        <td>list_tables / get_table_data / execute_query against a mock pipeline JSON payload</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Pool + dispatch: <code>db_type = "turso"</code></td>
+        <td><code>pool_manager.rs</code>, <code>commands/database.rs</code>, <code>models.rs</code></td>
+        <td>Connect uses host URL + password token; SSH hidden</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Connection form: name, URL (<code>libsql://</code> or <code>https://</code>), auth token; Test button</td>
+        <td><code>ConnectionForm.tsx</code>, <code>types/connection.ts</code>, <code>Connections.tsx</code></td>
+        <td>Test runs <code>SELECT 1</code>; spinner is “&lt;Spinner&gt; Test”; token field is masked</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Open Turso connections with the SQLite UI (same as D1/local SQLite)</td>
+        <td><code>ConnectionDetails.tsx</code></td>
+        <td>Object explorer, grid, query editor, row edit work; functions hidden</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>Turso HTTP contract and field mapping</summary>
+    <p>Accept <code>libsql://…</code> and <code>https://…</code>. Normalize to <code>https://{host}/v2/pipeline</code>. Auth header: <code>Authorization: Bearer {token}</code>.</p>
+    <pre><code>POST /v2/pipeline
+{
+  "requests": [
+    { "type": "execute", "stmt": { "sql": "SELECT 1" } },
+    { "type": "close" }
+  ]
+}</code></pre>
+    <p>Map <code>results[0].response.result.cols</code> / <code>rows</code> / <code>affected_row_count</code> onto <code>QueryResult</code>. Hrana rows are typed (<code>integer</code>, <code>float</code>, <code>text</code>, <code>blob</code>, <code>null</code>); integers arrive as strings to preserve i64.</p>
+    <p>Reuse the same SQLite catalog SQL as D1. Catalog + pagination + row SQL live in the existing frontend; the driver only executes.</p>
+    <pre><code>pub struct TursoConfig {
+    pub url: String,       // https host, no /v2/pipeline suffix stored
+    pub auth_token: String,
+}
+
+// connection row
+// db_type  = "turso"
+// host     = normalized https URL
+// password = auth token</code></pre>
+    <p>v1 does not wrap the native <code>libsql</code> crate (binary size, extra native deps). If Hrana HTTP is missing a needed feature, revisit — not the default.</p>
+  </details>
+
+  <h2>Phase 4 — S3 client + connection type <span class="badge todo">Todo</span></h2>
+  <p>Add a reusable SigV4 S3 client and a first-class S3 connection in Add connection.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>S3 client: list buckets, list objects (delimiter + continuation), head, get (range), put, multipart put, delete, copy</td>
+        <td><code>src-tauri/src/s3.rs</code>, <code>Cargo.toml</code></td>
+        <td>Unit tests with a mock S3 endpoint (path-style)</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Tauri commands wrapping the client; R2 config from Cloudflare settings</td>
+        <td><code>src-tauri/src/commands/s3.rs</code>, <code>lib.rs</code></td>
+        <td>R2 uses derived keys or optional explicit keys; endpoint <code>https://{account_id}.r2.cloudflarestorage.com</code>, region <code>auto</code></td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Connection model: <code>db_type = "s3"</code> + extra JSON</td>
+        <td><code>models.rs</code>, <code>commands/connections.rs</code>, <code>types/connection.ts</code>, <code>lib/tauri.ts</code></td>
+        <td>Create/update/export/import round-trip extra fields</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Connection form fields for S3; hide SSH/SQL fields</td>
+        <td><code>src/components/ConnectionForm.tsx</code>, <code>src/pages/Connections.tsx</code></td>
+        <td>Test connection lists buckets or objects; spinner: “&lt;Spinner&gt; Test”</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>Crate choice, extra JSON, form fields</summary>
+    <p><strong>Crate:</strong> prefer a focused SigV4 client (<code>aws-sdk-s3</code> with a custom endpoint, or <code>rusty-s3</code> if binary size is painful). Must support ListObjectsV2 with delimiter, Range GET, CopyObject, multipart upload above ~8MB, and path-style for MinIO/R2.</p>
+    <p>Connection extra JSON:</p>
+    <pre><code>{
+  "region": "us-east-1",
+  "endpoint": "https://minio.example.com",
+  "path_style": true,
+  "prefix": "optional/"
+}</code></pre>
+    <p>Field mapping: <code>username</code> = access key, <code>password</code> = secret, <code>database</code> = bucket (optional), <code>name</code> as usual. Empty bucket → bucket list first. Path-style defaults on when endpoint is set.</p>
+    <p>R2 from Cloudflare: no connection row. Synthetic id <code>cf:r2:{account}:{bucket}</code>. Credentials: token id + SHA-256(token), else optional settings keys.</p>
+  </details>
+
+  <h2>Phase 5 — Object browser <span class="badge todo">Todo</span></h2>
+  <p>A file manager, not a SQL screen. Used for both generic S3 connections and Cloudflare R2 buckets.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Prefix browser: breadcrumbs, folders (common prefixes), object table (name, size, modified)</td>
+        <td><code>src/components/s3/S3Browser.tsx</code>, <code>S3BucketList.tsx</code></td>
+        <td>Navigate folders; empty bucket; continuation for large prefixes</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Preview sheet: image, text/json/csv (first ~1MB), binary metadata</td>
+        <td><code>src/components/s3/S3ObjectSheet.tsx</code></td>
+        <td>PNG/JPEG render; JSON pretty-print; huge file does not load fully</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Mutations: upload (multipart ≥8MB), download to disk, delete (multi-select), copy/rename, new folder prefix</td>
+        <td><code>S3UploadDialog.tsx</code>, Tauri <code>s3_*</code> commands</td>
+        <td>Upload appears after refresh; delete confirms; rename uses Copy+Delete</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Mount browser from ConnectionDetails for <code>s3</code> and Cloudflare R2; do not dump into the 4k-line page</td>
+        <td><code>ConnectionDetails.tsx</code>, <code>CloudflareTree.tsx</code></td>
+        <td>SQL editor/schema viz hidden; Redis-style dedicated surface</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <details>
+    <summary>UI notes</summary>
+    <p>Follow Redis: when <code>db_type === "s3"</code> or navigation state <code>cloudflare.kind === "r2"</code>, skip table explorer and render <code>S3Browser</code>.</p>
+    <p>Destructive actions (delete, overwrite upload) use the existing alert-dialog pattern. Loading buttons use shadcn <code>Spinner</code> with no extra icon gap. Test button text stays “Test”.</p>
+    <p>Downloads go through the Tauri save dialog and stream to disk. Uploads go through the open dialog (multi-file ok).</p>
+    <p>New folder is a prefix ending in <code>/</code>. Do not create a placeholder object unless the target S3 requires it — list via delimiter so empty prefixes may disappear until an object exists. Acceptable v1: upload with key <code>folder/</code> only if the user creates a folder in an empty prefix.</p>
+  </details>
+
+  <h2>Phase 6 — Tests and polish <span class="badge todo">Todo</span></h2>
+  <p>Prove the HTTP surfaces without live Cloudflare or Turso credentials, then make the new types look native.</p>
+  <table>
+    <thead><tr><th>Task</th><th>Files</th><th>Verification</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>D1 driver tests with mocked Cloudflare JSON (list, select, write, error)</td>
+        <td><code>src-tauri/tests/d1_integration_tests.rs</code></td>
+        <td><code>cargo test --test d1_integration_tests</code></td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Turso driver tests with mocked Hrana pipeline JSON (select, write, typed ints, error)</td>
+        <td><code>src-tauri/tests/turso_integration_tests.rs</code></td>
+        <td><code>cargo test --test turso_integration_tests</code></td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>S3 client tests against mock or optional MinIO in docker-compose</td>
+        <td><code>src-tauri/tests/s3_integration_tests.rs</code>, optional compose service</td>
+        <td>list/put/get/delete/copy pass</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Icons, connection cards, export/import extra, frontend types for S3 list payloads</td>
+        <td><code>src/components/icons/*</code>, <code>Connections.tsx</code>, docs site icons if needed</td>
+        <td>D1/R2/S3/Turso recognizable in the sidebar and cards</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+      <tr>
+        <td>Settings copy: required permissions, SHA-256 derivation, optional R2 keys fallback</td>
+        <td><code>SettingsForm.tsx</code></td>
+        <td>A user with only D1 perms still sees R2 errors that say what to add</td>
+        <td><span class="badge todo">Todo</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Risks &amp; Mitigations</h2>
+  <table>
+    <thead><tr><th>Risk</th><th>Severity</th><th>Mitigation</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>A dashboard API token may not derive valid R2 S3 keys (id + SHA-256 is documented for tokens created via the Tokens API / R2 token UI).</td>
+        <td><span class="badge risk">High</span></td>
+        <td>Optional explicit R2 access key + secret in Settings. On object-list failure, show that fallback, not a generic 403.</td>
+      </tr>
+      <tr>
+        <td>One token often lacks both D1 and R2 permission groups.</td>
+        <td><span class="badge risk">Medium</span></td>
+        <td>Sync is best-effort per kind: D1 list failing does not hide R2, and vice versa. Surface partial errors on the tree.</td>
+      </tr>
+      <tr>
+        <td>D1 REST is rate-limited and caps response size (~10MB) and query duration.</td>
+        <td><span class="badge risk">Medium</span></td>
+        <td>Keep table pagination; pass through API errors; no “load entire table”.</td>
+      </tr>
+      <tr>
+        <td>Full <code>aws-sdk-s3</code> bloats the Tauri binary.</td>
+        <td><span class="badge risk">Medium</span></td>
+        <td>Start with the smallest crate that supports ListObjectsV2 + multipart; measure <code>bun run tauri build</code> size before merging.</td>
+      </tr>
+      <tr>
+        <td><code>ConnectionDetails.tsx</code> is already huge; stuffing S3 into it will make it worse.</td>
+        <td><span class="badge risk">High</span></td>
+        <td>Hard rule: S3 UI lives in <code>src/components/s3/</code>. Details page only branches and mounts.</td>
+      </tr>
+      <tr>
+        <td>D1 / Turso PRAGMA / sqlite_master quirks vs local SQLite.</td>
+        <td><span class="badge risk">Low</span></td>
+        <td>If a catalog query fails, fall back to simpler <code>PRAGMA table_info</code> per table. Schema viz degrades rather than blanking. Shared fallback for both remote SQLite drivers.</td>
+      </tr>
+      <tr>
+        <td>Hrana HTTP row types (i64 as strings, blobs as base64) mismatch the SQLite json mapping.</td>
+        <td><span class="badge risk">Medium</span></td>
+        <td>Centralize Hrana value decoding in <code>turso.rs</code>. Tests cover integer/float/text/blob/null. Do not pull in the native libsql crate unless HTTP is insufficient.</td>
+      </tr>
+      <tr>
+        <td>Users paste a Turso <em>platform</em> API token instead of a database token.</td>
+        <td><span class="badge risk">Low</span></td>
+        <td>Test-connection error copy: “Use a database auth token from <code>turso db tokens create</code>, not the platform API token.”</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Verification</h2>
+  <ul>
+    <li>Automated: <code>cargo test</code> including new D1/Turso/S3 tests; existing sqlite/postgres/redis/clickhouse tests still pass; frontend typecheck.</li>
+    <li>Manual — Cloudflare: paste token, Test, see D1 + R2 in sidebar, open a D1 database, run a SELECT, edit a row, run a write, confirm Cloudflare dashboard matches.</li>
+    <li>Manual — Turso: add a connection with <code>libsql://</code> URL + database token, Test, browse tables, edit a row, run a write. Repeat with an <code>https://</code> URL. No Cloudflare token required.</li>
+    <li>Manual — R2: open a bucket, browse a prefix, preview an image and a JSON file, upload, download, rename, delete.</li>
+    <li>Manual — generic S3: add a MinIO or AWS connection with explicit keys, no Cloudflare token required, same browser.</li>
+    <li>Manual — token with D1-only perms: D1 works, R2 group shows a permission error, optional R2 keys still unlock R2.</li>
+    <li>Regression: ForgeGraph tree, local SQLite/Postgres/Redis/ClickHouse connect and query still work.</li>
+  </ul>
+
+  <h2>Open Questions</h2>
+  <div class="callout info">
+    <strong>Settled in this draft:</strong> hybrid Cloudflare discovery + generic S3; D1 is read/write SQLite UI and discovery-only; Turso is an Add-connection type (URL + database token) over Hrana HTTP; S3 v1 is a full file manager.
+  </div>
+  <div class="callout">
+    <strong>Deferred:</strong> jurisdiction-specific R2 endpoints (<code>.eu.r2.cloudflarestorage.com</code> etc.). Turso Platform API org listing / embedded replicas. v1 can store R2 jurisdiction in <code>extra</code> if the list-buckets payload includes it, but custom endpoints per bucket wait until someone hits a jurisdictional bucket.
+  </div>
+
+</main>
+</body>
+</html>

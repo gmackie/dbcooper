@@ -36,6 +36,13 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 	const [forgegraphToken, setForgegraphToken] = useState("");
 	const [showForgegraphToken, setShowForgegraphToken] = useState(false);
 	const [testingForgegraph, setTestingForgegraph] = useState(false);
+	const [cloudflareToken, setCloudflareToken] = useState("");
+	const [cloudflareAccountId, setCloudflareAccountId] = useState("");
+	const [cloudflareR2Key, setCloudflareR2Key] = useState("");
+	const [cloudflareR2Secret, setCloudflareR2Secret] = useState("");
+	const [showCloudflareToken, setShowCloudflareToken] = useState(false);
+	const [showCloudflareR2Secret, setShowCloudflareR2Secret] = useState(false);
+	const [testingCloudflare, setTestingCloudflare] = useState(false);
 
 	useEffect(() => {
 		loadSettings();
@@ -52,6 +59,10 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 			setOpenaiModel(settings.openai_model || "gpt-4.1");
 			setForgegraphServer(settings.forgegraph_server || "");
 			setForgegraphToken(settings.forgegraph_token || "");
+			setCloudflareToken(settings.cloudflare_api_token || "");
+			setCloudflareAccountId(settings.cloudflare_account_id || "");
+			setCloudflareR2Key(settings.cloudflare_r2_access_key || "");
+			setCloudflareR2Secret(settings.cloudflare_r2_secret_key || "");
 		} catch (error) {
 			console.error("Failed to load settings:", error);
 		} finally {
@@ -72,6 +83,10 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 			await api.settings.set("openai_model", openaiModel);
 			await api.settings.set("forgegraph_server", forgegraphServer);
 			await api.settings.set("forgegraph_token", forgegraphToken);
+			await api.settings.set("cloudflare_api_token", cloudflareToken);
+			await api.settings.set("cloudflare_account_id", cloudflareAccountId);
+			await api.settings.set("cloudflare_r2_access_key", cloudflareR2Key);
+			await api.settings.set("cloudflare_r2_secret_key", cloudflareR2Secret);
 
 			applyTheme(theme);
 			toast.success("Settings saved");
@@ -95,6 +110,28 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 			toast.error(String(error));
 		} finally {
 			setTestingForgegraph(false);
+		}
+	};
+
+	const handleTestCloudflare = async () => {
+		setTestingCloudflare(true);
+		try {
+			await api.settings.set("cloudflare_api_token", cloudflareToken);
+			await api.settings.set("cloudflare_account_id", cloudflareAccountId);
+			await api.settings.set("cloudflare_r2_access_key", cloudflareR2Key);
+			await api.settings.set("cloudflare_r2_secret_key", cloudflareR2Secret);
+			const result = await api.cloudflare.test();
+			if (result.accountId && !cloudflareAccountId) {
+				setCloudflareAccountId(result.accountId);
+			}
+			const parts = [`${result.d1Count} D1`, `${result.r2Count} R2`];
+			toast.success(`Connected — ${parts.join(", ")}`);
+			if (result.d1Error) toast.error(`D1: ${result.d1Error}`);
+			if (result.r2Error) toast.error(`R2: ${result.r2Error}`);
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			setTestingCloudflare(false);
 		}
 	};
 
@@ -284,6 +321,105 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 					>
 						{testingForgegraph && <Spinner />}
 						Test Connection
+					</Button>
+				)}
+			</div>
+
+			<div className="space-y-3">
+				<h3 className={headingSize}>Cloudflare</h3>
+				<p className="text-[0.8rem] text-muted-foreground">
+					API token needs D1 Read/Write and Workers R2 Storage Read/Write.
+					Object browsing derives S3 keys from the token id + SHA-256 of the
+					token value. If that fails, set optional R2 S3 keys below.
+				</p>
+				<div className="space-y-2">
+					<Label htmlFor="cf-token" className={compact ? "text-sm" : ""}>
+						API Token
+					</Label>
+					<div className="relative">
+						<Input
+							id="cf-token"
+							type={showCloudflareToken ? "text" : "password"}
+							placeholder="Cloudflare API token"
+							value={cloudflareToken}
+							onChange={(e) => setCloudflareToken(e.target.value)}
+							className="pr-10"
+						/>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon"
+							className="absolute right-0 top-0 h-full"
+							onClick={() => setShowCloudflareToken(!showCloudflareToken)}
+						>
+							{showCloudflareToken ? (
+								<EyeSlash className="h-4 w-4" />
+							) : (
+								<Eye className="h-4 w-4" />
+							)}
+						</Button>
+					</div>
+				</div>
+				<div className="space-y-2">
+					<Label htmlFor="cf-account" className={compact ? "text-sm" : ""}>
+						Account ID
+					</Label>
+					<Input
+						id="cf-account"
+						placeholder="Auto-detected on Test if you have one account"
+						value={cloudflareAccountId}
+						onChange={(e) => setCloudflareAccountId(e.target.value)}
+					/>
+				</div>
+				<div className="space-y-2">
+					<Label htmlFor="cf-r2-key" className={compact ? "text-sm" : ""}>
+						R2 Access Key (optional)
+					</Label>
+					<Input
+						id="cf-r2-key"
+						value={cloudflareR2Key}
+						onChange={(e) => setCloudflareR2Key(e.target.value)}
+					/>
+				</div>
+				<div className="space-y-2">
+					<Label htmlFor="cf-r2-secret" className={compact ? "text-sm" : ""}>
+						R2 Secret Access Key (optional)
+					</Label>
+					<div className="relative">
+						<Input
+							id="cf-r2-secret"
+							type={showCloudflareR2Secret ? "text" : "password"}
+							value={cloudflareR2Secret}
+							onChange={(e) => setCloudflareR2Secret(e.target.value)}
+							className="pr-10"
+						/>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon"
+							className="absolute right-0 top-0 h-full"
+							onClick={() =>
+								setShowCloudflareR2Secret(!showCloudflareR2Secret)
+							}
+						>
+							{showCloudflareR2Secret ? (
+								<EyeSlash className="h-4 w-4" />
+							) : (
+								<Eye className="h-4 w-4" />
+							)}
+						</Button>
+					</div>
+				</div>
+				{cloudflareToken && (
+					<Button
+						type="button"
+						variant="outline"
+						size={compact ? "sm" : "default"}
+						onClick={handleTestCloudflare}
+						disabled={testingCloudflare}
+					>
+						{testingCloudflare && <Spinner />}
+						Test
 					</Button>
 				)}
 			</div>

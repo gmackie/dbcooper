@@ -10,11 +10,14 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 use super::clickhouse::ClickhouseDriver;
+use super::d1::D1Driver;
 use super::postgres::PostgresDriver;
 use super::redis::RedisDriver;
 use super::sqlite::SqliteDriver;
+use super::turso::TursoDriver;
 use super::{
-    ClickhouseConfig, ClickhouseProtocol, DatabaseDriver, PostgresConfig, RedisConfig, SqliteConfig,
+    ClickhouseConfig, ClickhouseProtocol, D1Config, DatabaseDriver, PostgresConfig, RedisConfig,
+    SqliteConfig, TursoConfig,
 };
 use crate::db::models::{
     FunctionDefinition, QueryResult, TableDataResponse, TableInfo, TableStructure,
@@ -49,6 +52,7 @@ pub struct ConnectionConfig {
     pub ssh_user: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_key_path: Option<String>,
+    pub extra: Option<String>,
 }
 
 /// Entry in the connection pool
@@ -67,6 +71,14 @@ pub struct PoolManager {
     pools: RwLock<HashMap<String, PoolEntry>>,
     /// Mutex per connection UUID to serialize connect/disconnect
     connect_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+fn extra_string(extra: &Option<String>, key: &str) -> Option<String> {
+    extra.as_ref().and_then(|raw| {
+        serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|v| v.get(key).and_then(|item| item.as_str()).map(|s| s.to_string()))
+    })
 }
 
 impl Default for PoolManager {
@@ -200,6 +212,25 @@ impl PoolManager {
                 };
                 Ok((Box::new(ClickhouseDriver::new(ch_config)), ssh_tunnel))
             }
+            "d1" => {
+                let d1_config = D1Config {
+                    account_id: config.host.clone().unwrap_or_default(),
+                    database_id: config.database.clone().unwrap_or_default(),
+                    api_token: config.password.clone().unwrap_or_default(),
+                    api_base: extra_string(&config.extra, "api_base"),
+                };
+                Ok((Box::new(D1Driver::new(d1_config)), None))
+            }
+            "turso" | "libsql" => {
+                let turso_config = TursoConfig {
+                    url: config.host.clone().unwrap_or_default(),
+                    auth_token: config.password.clone().unwrap_or_default(),
+                };
+                Ok((Box::new(TursoDriver::new(turso_config)), None))
+            }
+            "s3" | "r2" => Err(
+                "S3 connections use the object browser, not the SQL driver pool".to_string(),
+            ),
             _ => Err(format!("Unsupported database type: {}", config.db_type)),
         }
     }

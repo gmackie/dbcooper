@@ -61,6 +61,7 @@ pub async fn pool_connect(
         } else {
             Some(conn.ssh_key_path)
         },
+        extra: conn.extra,
     };
 
     match pool_manager.connect(&uuid, config).await {
@@ -148,6 +149,7 @@ async fn get_connection_config(
         } else {
             Some(conn.ssh_key_path)
         },
+        extra: conn.extra,
     })
 }
 

@@ -1,11 +1,14 @@
 use async_trait::async_trait;
 
 pub mod clickhouse;
+pub mod d1;
+pub mod json_rows;
 pub mod pool_manager;
 pub mod postgres;
 pub mod queries;
 pub mod redis;
 pub mod sqlite;
+pub mod turso;
 
 use crate::db::models::{
     FunctionDefinition, QueryResult, SchemaOverview, TableDataResponse, TableInfo, TableStructure,
@@ -221,6 +224,9 @@ pub struct SqliteConfig {
     pub file_path: String,
 }
 
+pub use d1::{D1Config, D1Driver};
+pub use turso::{TursoConfig, TursoDriver};
+
 /// Configuration for Redis connections
 #[derive(Clone)]
 pub struct RedisConfig {
@@ -243,6 +249,9 @@ pub enum DatabaseType {
     Sqlite,
     Redis,
     Clickhouse,
+    D1,
+    Turso,
+    S3,
 }
 
 impl DatabaseType {
@@ -253,6 +262,9 @@ impl DatabaseType {
             "sqlite" | "sqlite3" => Some(DatabaseType::Sqlite),
             "redis" => Some(DatabaseType::Redis),
             "clickhouse" => Some(DatabaseType::Clickhouse),
+            "d1" => Some(DatabaseType::D1),
+            "turso" | "libsql" => Some(DatabaseType::Turso),
+            "s3" | "r2" => Some(DatabaseType::S3),
             _ => None,
         }
     }
