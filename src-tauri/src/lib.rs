@@ -23,13 +23,13 @@ use commands::cloudflare::{
     cloudflare_pool_key, cloudflare_sync, cloudflare_test,
 };
 use commands::forgegraph::{
-    forgegraph_connect, forgegraph_disconnect, forgegraph_get_status, forgegraph_is_configured,
-    forgegraph_list_cached, forgegraph_pool_key, forgegraph_sync,
+    forgegraph_connect, forgegraph_credentials, forgegraph_disconnect, forgegraph_get_status,
+    forgegraph_is_configured, forgegraph_list_cached, forgegraph_pool_key, forgegraph_sync,
 };
 use commands::s3::{
-    s3_copy_object, s3_create_folder, s3_delete_objects, s3_download_object, s3_head_object,
-    s3_list_buckets, s3_list_objects, s3_preview_object, s3_test_connection, s3_test_form,
-    s3_upload_object,
+    s3_copy_object, s3_create_folder, s3_delete_objects, s3_download_object, s3_download_tmp_dir,
+    s3_head_object, s3_list_buckets, s3_list_objects, s3_open_object, s3_preview_object,
+    s3_test_connection, s3_test_form, s3_upload_object,
 };
 use commands::pool::{
     pool_connect, pool_delete_table_row, pool_disconnect, pool_execute_query,
@@ -227,6 +227,7 @@ pub fn run() {
             forgegraph_get_status,
             forgegraph_pool_key,
             forgegraph_is_configured,
+            forgegraph_credentials,
             cloudflare_is_configured,
             cloudflare_test,
             cloudflare_sync,
@@ -241,6 +242,8 @@ pub fn run() {
             s3_head_object,
             s3_preview_object,
             s3_download_object,
+            s3_download_tmp_dir,
+            s3_open_object,
             s3_upload_object,
             s3_delete_objects,
             s3_copy_object,

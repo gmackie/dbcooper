@@ -38,53 +38,45 @@ fn credential_string<'a>(credentials: &'a serde_json::Value, keys: &[&str]) -> O
         .map(|value| value.to_string())
 }
 
-/// Read ForgeGraph credentials from `~/.forgegraph/credentials.json` (forge CLI config).
-/// Falls back to the settings table if the CLI config is not present.
-async fn read_fg_settings(sqlite_pool: &SqlitePool) -> Result<(String, String), String> {
-    // Try forge CLI credentials first
-    if let Some(home) = dirs::home_dir() {
-        let creds_path = home.join(".forgegraph").join("credentials.json");
-        if let Ok(contents) = std::fs::read_to_string(&creds_path) {
-            if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&contents) {
-                let server = creds
-                    .get("server")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let token = creds
-                    .get("token")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                if let (Some(s), Some(t)) = (server, token) {
-                    if !s.is_empty() && !t.is_empty() {
-                        return Ok((s, t));
-                    }
-                }
-            }
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeGraphCredentials {
+    pub server: String,
+    pub token: String,
+    pub source: String,
+}
 
-    // Fall back to settings table
+async fn settings_fg_credentials(
+    sqlite_pool: &SqlitePool,
+) -> Result<(Option<String>, Option<String>), String> {
     let server: Option<crate::db::models::Setting> =
         sqlx::query_as("SELECT key, value FROM settings WHERE key = ?")
             .bind("forgegraph_server")
             .fetch_optional(sqlite_pool)
             .await
             .map_err(|e| format!("Failed to read forgegraph_server setting: {}", e))?;
-
     let token: Option<crate::db::models::Setting> =
         sqlx::query_as("SELECT key, value FROM settings WHERE key = ?")
             .bind("forgegraph_token")
             .fetch_optional(sqlite_pool)
             .await
             .map_err(|e| format!("Failed to read forgegraph_token setting: {}", e))?;
+    Ok((
+        server.map(|s| s.value).filter(|v| !v.trim().is_empty()),
+        token.map(|s| s.value).filter(|v| !v.trim().is_empty()),
+    ))
+}
 
-    let server = server
-        .map(|s| s.value)
-        .ok_or_else(|| "ForgeGraph server URL not configured".to_string())?;
-    let token = token
-        .map(|s| s.value)
-        .ok_or_else(|| "ForgeGraph API token not configured".to_string())?;
+/// Read ForgeGraph credentials from `~/.forgegraph/credentials.json` (forge CLI config).
+/// Falls back to the settings table if the CLI config is not present.
+async fn read_fg_settings(sqlite_pool: &SqlitePool) -> Result<(String, String), String> {
+    if let Some(pair) = forgegraph::load_cli_credentials() {
+        return Ok(pair);
+    }
 
+    let (server, token) = settings_fg_credentials(sqlite_pool).await?;
+    let server = server.ok_or_else(|| "ForgeGraph server URL not configured".to_string())?;
+    let token = token.ok_or_else(|| "ForgeGraph API token not configured".to_string())?;
     Ok((server, token))
 }
 
@@ -292,4 +284,24 @@ pub async fn forgegraph_pool_key(
 #[tauri::command]
 pub async fn forgegraph_is_configured(sqlite_pool: State<'_, SqlitePool>) -> Result<bool, String> {
     Ok(read_fg_settings(sqlite_pool.inner()).await.is_ok())
+}
+
+/// Effective credentials shown in Settings (CLI file wins over the settings table).
+#[tauri::command]
+pub async fn forgegraph_credentials(
+    sqlite_pool: State<'_, SqlitePool>,
+) -> Result<ForgeGraphCredentials, String> {
+    if let Some((server, token)) = forgegraph::load_cli_credentials() {
+        return Ok(ForgeGraphCredentials {
+            server,
+            token,
+            source: "cli".to_string(),
+        });
+    }
+    let (server, token) = settings_fg_credentials(sqlite_pool.inner()).await?;
+    Ok(ForgeGraphCredentials {
+        server: server.unwrap_or_default(),
+        token: token.unwrap_or_default(),
+        source: "settings".to_string(),
+    })
 }

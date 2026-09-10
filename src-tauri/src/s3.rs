@@ -1,7 +1,7 @@
 //! S3-compatible client used for generic S3 connections and Cloudflare R2.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusty_s3::actions::{
@@ -150,6 +150,10 @@ impl S3Client {
         let creds = self.credentials();
         let bucket = self.bucket(bucket_name)?;
         let mut action = ListObjectsV2::new(&bucket, Some(&creds));
+        // rusty-s3 always sets encoding-type=url, which percent-encodes
+        // CommonPrefixes (`artifacts%2F`). Prefer raw keys so the UI can
+        // slice folder names against the current prefix.
+        action.query_mut().remove("encoding-type");
         if let Some(prefix) = prefix.filter(|p| !p.is_empty()) {
             action.with_prefix(prefix.to_string());
         }
@@ -463,6 +467,91 @@ impl S3Client {
     }
 }
 
+pub fn default_download_tmp_dir() -> PathBuf {
+    std::env::temp_dir().join("dbcooper")
+}
+
+pub fn resolve_download_tmp_dir(configured: Option<&str>) -> PathBuf {
+    match configured.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => expand_tilde(path),
+        None => default_download_tmp_dir(),
+    }
+}
+
+pub fn object_file_name(key: &str) -> String {
+    let name = key
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or("download");
+    if name == "." || name == ".." {
+        "download".to_string()
+    } else {
+        name.replace('\0', "_")
+    }
+}
+
+pub fn unique_download_path(dir: &Path, key: &str) -> PathBuf {
+    let name = object_file_name(key);
+    let dest = dir.join(&name);
+    if !dest.exists() {
+        return dest;
+    }
+    let stem = dest
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string());
+    let ext = dest.extension().map(|s| s.to_string_lossy().into_owned());
+    for i in 1..1000 {
+        let mut candidate = dir.join(format!("{stem} ({i})"));
+        if let Some(ext) = &ext {
+            candidate.set_extension(ext);
+        }
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dest
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+pub fn open_downloaded_path(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path.display().to_string()])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
 fn format_s3_error(status: u16, body: &str) -> String {
     if let Some(message) = extract_xml_tag(body, "Message") {
         return format!("S3 error ({status}): {message}");
@@ -478,7 +567,22 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     Some(xml[start..end].to_string())
 }
 
+fn decode_s3_key(value: &str) -> String {
+    urlencoding::decode(value)
+        .map(|cow| cow.into_owned())
+        .unwrap_or_else(|_| value.to_string())
+}
+
 fn parse_list_objects(xml: &str) -> Result<S3ListResult, String> {
+    let encoded = extract_xml_tag(xml, "EncodingType")
+        .is_some_and(|s| s.eq_ignore_ascii_case("url"));
+    let decode = |value: String| {
+        if encoded {
+            decode_s3_key(&value)
+        } else {
+            value
+        }
+    };
     let mut objects = Vec::new();
     let mut prefixes = Vec::new();
     for chunk in xml.split("<Contents>").skip(1) {
@@ -490,7 +594,7 @@ fn parse_list_objects(xml: &str) -> Result<S3ListResult, String> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         objects.push(S3Object {
-            key,
+            key: decode(key),
             size,
             last_modified: extract_xml_tag(&format!("<Contents>{chunk}"), "LastModified"),
             etag: extract_xml_tag(&format!("<Contents>{chunk}"), "ETag"),
@@ -499,6 +603,10 @@ fn parse_list_objects(xml: &str) -> Result<S3ListResult, String> {
     }
     for chunk in xml.split("<CommonPrefixes>").skip(1) {
         if let Some(prefix) = extract_xml_tag(&format!("<CommonPrefixes>{chunk}"), "Prefix") {
+            let prefix = decode(prefix);
+            if prefix.is_empty() || prefix == "/" {
+                continue;
+            }
             prefixes.push(S3Prefix { prefix });
         }
     }
@@ -538,7 +646,10 @@ fn guess_content_type(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_list_objects;
+    use super::{
+        object_file_name, parse_list_objects, resolve_download_tmp_dir, unique_download_path,
+    };
+    use std::fs;
 
     #[test]
     fn parses_prefixes_and_objects() {
@@ -560,6 +671,72 @@ mod tests {
         assert_eq!(result.objects[0].size, 12);
         assert_eq!(result.prefixes[0].prefix, "photos/");
         assert!(!result.is_truncated);
+    }
+
+    #[test]
+    fn decodes_url_encoded_prefixes_and_keys() {
+        let xml = r#"
+        <ListBucketResult>
+          <EncodingType>url</EncodingType>
+          <IsTruncated>false</IsTruncated>
+          <Contents>
+            <Key>artifacts%2Freadme.txt</Key>
+            <Size>4</Size>
+          </Contents>
+          <CommonPrefixes>
+            <Prefix>artifacts%2F</Prefix>
+          </CommonPrefixes>
+          <CommonPrefixes>
+            <Prefix>plans%2F</Prefix>
+          </CommonPrefixes>
+        </ListBucketResult>
+        "#;
+        let result = parse_list_objects(xml).unwrap();
+        assert_eq!(result.prefixes[0].prefix, "artifacts/");
+        assert_eq!(result.prefixes[1].prefix, "plans/");
+        assert_eq!(result.objects[0].key, "artifacts/readme.txt");
+    }
+
+    #[test]
+    fn parses_real_r2_url_encoded_common_prefixes() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>bizpulse-artifacts</Name><IsTruncated>false</IsTruncated><CommonPrefixes><Prefix>artifacts%2F</Prefix></CommonPrefixes><CommonPrefixes><Prefix>plans%2F</Prefix></CommonPrefixes><CommonPrefixes><Prefix>strategy-migration%2F</Prefix></CommonPrefixes><CommonPrefixes><Prefix>strategy-migrations%2F</Prefix></CommonPrefixes><Delimiter>%2F</Delimiter><MaxKeys>1000</MaxKeys><KeyCount>4</KeyCount><EncodingType>url</EncodingType></ListBucketResult>"#;
+        let result = parse_list_objects(xml).unwrap();
+        assert_eq!(
+            result
+                .prefixes
+                .iter()
+                .map(|p| p.prefix.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "artifacts/",
+                "plans/",
+                "strategy-migration/",
+                "strategy-migrations/"
+            ]
+        );
+    }
+
+    #[test]
+    fn object_file_name_uses_last_segment() {
+        assert_eq!(object_file_name("artifacts/plans/notes.md"), "notes.md");
+        assert_eq!(object_file_name("notes.md"), "notes.md");
+        assert_eq!(object_file_name("folder/"), "folder");
+        assert_eq!(object_file_name(".."), "download");
+    }
+
+    #[test]
+    fn unique_download_path_increments_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = unique_download_path(dir.path(), "photo.png");
+        fs::write(&first, b"a").unwrap();
+        let second = unique_download_path(dir.path(), "photo.png");
+        assert_eq!(second.file_name().unwrap(), "photo (1).png");
+    }
+
+    #[test]
+    fn resolves_configured_download_dir() {
+        let resolved = resolve_download_tmp_dir(Some("/tmp/custom-dbcooper"));
+        assert_eq!(resolved, std::path::PathBuf::from("/tmp/custom-dbcooper"));
     }
 }
 

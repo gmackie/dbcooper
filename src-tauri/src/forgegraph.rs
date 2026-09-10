@@ -59,6 +59,31 @@ impl std::fmt::Debug for ForgeGraphConnection {
     }
 }
 
+/// Parse `~/.forgegraph/credentials.json` contents into (server, token).
+pub fn parse_cli_credentials(contents: &str) -> Option<(String, String)> {
+    let creds: serde_json::Value = serde_json::from_str(contents).ok()?;
+    let server = creds
+        .get("server")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let token = creds
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some((server, token))
+}
+
+pub fn load_cli_credentials() -> Option<(String, String)> {
+    let home = dirs::home_dir()?;
+    let contents =
+        std::fs::read_to_string(home.join(".forgegraph").join("credentials.json")).ok()?;
+    parse_cli_credentials(&contents)
+}
+
 /// Outer tRPC envelope — `{ result: { data: T } }`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TrpcResponse<T> {
@@ -363,6 +388,25 @@ mod tests {
 
         assert_eq!(service.config["connectionAvailable"], false);
         assert_eq!(service.config["connectionError"], "missing secret");
+    }
+
+    #[test]
+    fn parses_forge_cli_credentials() {
+        let (server, token) = parse_cli_credentials(
+            r#"{ "server": "https://forgegraf.com", "token": "fg_abc", "forgejo_token": "x" }"#,
+        )
+        .unwrap();
+        assert_eq!(server, "https://forgegraf.com");
+        assert_eq!(token, "fg_abc");
+    }
+
+    #[test]
+    fn ignores_empty_cli_token() {
+        assert!(
+            parse_cli_credentials(r#"{ "server": "https://forgegraf.com", "token": "" }"#)
+                .is_none()
+        );
+        assert!(parse_cli_credentials("{ not json").is_none());
     }
 }
 

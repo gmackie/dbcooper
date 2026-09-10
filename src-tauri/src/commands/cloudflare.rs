@@ -61,6 +61,8 @@ pub async fn read_cloudflare_settings(
 ) -> Result<(String, String, Option<String>, Option<String>), String> {
     let token = setting_value(pool, "cloudflare_api_token")
         .await?
+        .map(|t| crate::cloudflare::normalize_api_token(&t))
+        .filter(|t| !t.is_empty())
         .ok_or_else(|| "Cloudflare API token not configured".to_string())?;
     let account_id = setting_value(pool, "cloudflare_account_id")
         .await?
@@ -87,8 +89,11 @@ pub async fn r2_s3_config_from_settings(pool: &SqlitePool) -> Result<S3Config, S
         (key, secret)
     } else {
         let client = CloudflareClient::new(&token);
-        let verify = client.verify_token().await?;
-        let derived: R2S3Credentials = client.derive_r2_credentials(&verify.id);
+        let auth = client.authenticate(Some(&account_id)).await?;
+        let token_id = auth.token_id.ok_or_else(|| {
+            "Could not resolve Cloudflare token id for R2 key derivation. Set R2 Access Key and Secret in Settings.".to_string()
+        })?;
+        let derived: R2S3Credentials = client.derive_r2_credentials(&token_id);
         (derived.access_key_id, derived.secret_access_key)
     };
     Ok(S3Config {
@@ -115,8 +120,10 @@ pub async fn cloudflare_test(
 ) -> Result<CloudflareTestResult, String> {
     let (token, mut account_id, _, _) = read_cloudflare_settings(sqlite_pool.inner()).await?;
     let client = CloudflareClient::new(&token);
-    let verify = client.verify_token().await?;
-    let accounts = client.list_accounts().await.unwrap_or_default();
+    let auth = client
+        .authenticate((!account_id.is_empty()).then_some(account_id.as_str()))
+        .await?;
+    let accounts = auth.accounts;
     if account_id.is_empty() {
         if accounts.len() == 1 {
             account_id = accounts[0].id.clone();
@@ -169,7 +176,7 @@ pub async fn cloudflare_test(
         r2_count,
         d1_error,
         r2_error,
-        token_id: Some(verify.id),
+        token_id: auth.token_id,
     })
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ArrowLeft,
 	DownloadSimple,
@@ -47,6 +47,7 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 	const [folderName, setFolderName] = useState("");
 	const [showFolder, setShowFolder] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const previewClickTimer = useRef<number | null>(null);
 
 	const crumbs = useMemo(() => {
 		const parts = prefix.split("/").filter(Boolean);
@@ -94,6 +95,32 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 		} finally {
 			setPreviewLoading(false);
 		}
+	};
+
+	const handleOpen = async (key: string) => {
+		if (previewClickTimer.current) {
+			window.clearTimeout(previewClickTimer.current);
+			previewClickTimer.current = null;
+		}
+		setBusy(true);
+		try {
+			const dest = await api.s3.openObject(source, key);
+			toast.success(`Opened ${dest.split("/").pop() || "file"}`);
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const handleNameClick = (key: string) => {
+		if (previewClickTimer.current) {
+			window.clearTimeout(previewClickTimer.current);
+		}
+		previewClickTimer.current = window.setTimeout(() => {
+			previewClickTimer.current = null;
+			void handlePreview(key);
+		}, 250);
 	};
 
 	const handleUpload = async () => {
@@ -181,6 +208,21 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 	const objects = listing?.objects.filter((obj) => obj.key !== prefix) ?? [];
 	const prefixes = listing?.prefixes ?? [];
 
+	const entryName = (key: string) => {
+		const normalizedKey = key.replace(/\/+$/, "");
+		const normalizedCurrent = prefix.replace(/\/+$/, "");
+		let rest = normalizedKey;
+		if (
+			normalizedCurrent &&
+			normalizedKey.startsWith(`${normalizedCurrent}/`)
+		) {
+			rest = normalizedKey.slice(normalizedCurrent.length + 1);
+		} else if (normalizedCurrent && normalizedKey === normalizedCurrent) {
+			return "";
+		}
+		return rest.split("/").filter(Boolean)[0] ?? "";
+	};
+
 	return (
 		<div className="flex flex-col h-full min-h-0">
 			<div className="flex items-center gap-2 px-4 py-2 border-b">
@@ -266,7 +308,8 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 						</thead>
 						<tbody>
 							{prefixes.map((item) => {
-								const name = item.prefix.slice(prefix.length).replace(/\/$/, "");
+								const name = entryName(item.prefix);
+								if (!name) return null;
 								return (
 									<tr
 										key={item.prefix}
@@ -284,10 +327,17 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 								);
 							})}
 							{objects.map((obj) => {
-								const name = obj.key.slice(prefix.length);
+								const name =
+									prefix && obj.key.startsWith(prefix)
+										? obj.key.slice(prefix.length)
+										: obj.key;
 								const checked = selected.has(obj.key);
 								return (
-									<tr key={obj.key} className="border-b hover:bg-accent/50">
+									<tr
+										key={obj.key}
+										className="border-b hover:bg-accent/50"
+										onDoubleClick={() => handleOpen(obj.key)}
+									>
 										<td className="px-3 py-2">
 											<input
 												type="checkbox"
@@ -304,7 +354,11 @@ export function S3Browser({ source, initialPrefix = "" }: S3BrowserProps) {
 										</td>
 										<td
 											className="px-3 py-2 cursor-pointer"
-											onClick={() => handlePreview(obj.key)}
+											onClick={() => handleNameClick(obj.key)}
+											onDoubleClick={(event) => {
+												event.stopPropagation();
+												void handleOpen(obj.key);
+											}}
 										>
 											{name}
 										</td>

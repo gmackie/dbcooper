@@ -60,7 +60,12 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 if [[ -z "$REPO" ]]; then
-  REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+  origin_url="$(git remote get-url origin 2>/dev/null || true)"
+  if [[ "$origin_url" =~ github.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  else
+    REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+  fi
 fi
 
 VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
