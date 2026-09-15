@@ -50,9 +50,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFGREEzQjBGODJCNUI5MjIKUldRaXViV0NEenZhSDJ4YkNMZTFzTm8rd0xkc1lmYmdDTFdia1JqYU9kRVNlRStzd1E0NkF0OFkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2QTYxNEY3NTA4MDNFMDIKUldRQ1BvQlE5eFNtOWdTN01wa3RhaFZIVGx4YmVrZFB5QzA0akdYV25pZkdhOG1NL1NybkNvV3kK",
       "endpoints": [
-        "https://github.com/amalshaji/dbcooper/releases/latest/download/latest.json"
+        "https://github.com/gmackie/dbcooper/releases/latest/download/latest.json"
       ]
     }
   }

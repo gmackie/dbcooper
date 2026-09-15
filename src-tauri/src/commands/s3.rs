@@ -1,7 +1,8 @@
 use crate::commands::cloudflare::r2_s3_config_from_settings;
-use crate::db::models::Connection;
+use crate::db::models::{Connection, Setting};
 use crate::s3::{
-    S3BucketInfo, S3Client, S3Config, S3ListResult, S3Object, S3ObjectPreview,
+    open_downloaded_path, resolve_download_tmp_dir, unique_download_path, S3BucketInfo, S3Client,
+    S3Config, S3ListResult, S3Object, S3ObjectPreview,
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -168,6 +169,42 @@ pub async fn s3_preview_object(
     let (client, bucket) = resolve_client(sqlite_pool.inner(), &source).await?;
     let bucket = require_bucket(bucket)?;
     client.preview_object(&bucket, &key).await
+}
+
+async fn configured_download_tmp_dir(pool: &SqlitePool) -> Result<PathBuf, String> {
+    let row: Option<Setting> =
+        sqlx::query_as("SELECT key, value FROM settings WHERE key = ?")
+            .bind("download_tmp_dir")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(resolve_download_tmp_dir(
+        row.map(|s| s.value).as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn s3_download_tmp_dir(sqlite_pool: State<'_, SqlitePool>) -> Result<String, String> {
+    Ok(configured_download_tmp_dir(sqlite_pool.inner())
+        .await?
+        .to_string_lossy()
+        .into_owned())
+}
+
+#[tauri::command]
+pub async fn s3_open_object(
+    sqlite_pool: State<'_, SqlitePool>,
+    source: S3Source,
+    key: String,
+) -> Result<String, String> {
+    let (client, bucket) = resolve_client(sqlite_pool.inner(), &source).await?;
+    let bucket = require_bucket(bucket)?;
+    let dir = configured_download_tmp_dir(sqlite_pool.inner()).await?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = unique_download_path(&dir, &key);
+    client.download_object(&bucket, &key, &dest).await?;
+    open_downloaded_path(&dest)?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

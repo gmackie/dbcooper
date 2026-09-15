@@ -77,7 +77,31 @@ The app is configured to build for macOS ARM (Apple Silicon). The build process:
 
 ## Releases
 
-Releases are automated via GitHub Actions. To publish a new version:
+### Local (recommended)
+
+Build the macOS ARM app on this machine and upload a GitHub release:
+
+```bash
+# Private key must match plugins.updater.pubkey in src-tauri/tauri.conf.json
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dbcooper.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+
+# bump version in src-tauri/tauri.conf.json, then:
+bun run release              # draft release
+bun run release -- --publish # public release
+bun run release -- --skip-build
+bun run release -- --no-updater   # .dmg only, no signing key
+```
+
+`bun run release` reads the version from `src-tauri/tauri.conf.json`, runs `tauri build`, tags `vX.Y.Z` if needed, and uploads the `.dmg`, updater tarball, `.sig`, and `latest.json`.
+
+Generate a signing key once (update `pubkey` in `tauri.conf.json` if you create a new one):
+
+```bash
+bunx tauri signer generate -w ~/.tauri/dbcooper.key
+```
+
+### GitHub Actions
 
 1. Update `version` in `src-tauri/tauri.conf.json`
 2. Open a PR and add the `release` label
@@ -85,9 +109,7 @@ Releases are automated via GitHub Actions. To publish a new version:
 4. GitHub Actions will create and push the tag (e.g., `v0.0.42`), then build a draft release
 5. Review and publish the release
 
-### Required Secrets
-
-Set these in your GitHub repository settings:
+Required repository secrets for CI:
 
 - `TAURI_SIGNING_PRIVATE_KEY` - Contents of your signing key file
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` - Password (if set)

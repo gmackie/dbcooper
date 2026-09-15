@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Eye, EyeSlash } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Folder } from "@phosphor-icons/react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "@/lib/tauri";
 import { Spinner } from "@/components/ui/spinner";
 import { toast } from "sonner";
@@ -34,6 +35,9 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 	const [openaiModel, setOpenaiModel] = useState("gpt-4.1");
 	const [forgegraphServer, setForgegraphServer] = useState("");
 	const [forgegraphToken, setForgegraphToken] = useState("");
+	const [forgegraphCredSource, setForgegraphCredSource] = useState<
+		"cli" | "settings"
+	>("settings");
 	const [showForgegraphToken, setShowForgegraphToken] = useState(false);
 	const [testingForgegraph, setTestingForgegraph] = useState(false);
 	const [cloudflareToken, setCloudflareToken] = useState("");
@@ -43,6 +47,9 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 	const [showCloudflareToken, setShowCloudflareToken] = useState(false);
 	const [showCloudflareR2Secret, setShowCloudflareR2Secret] = useState(false);
 	const [testingCloudflare, setTestingCloudflare] = useState(false);
+	const [downloadTmpDir, setDownloadTmpDir] = useState("");
+	const [downloadTmpDirPlaceholder, setDownloadTmpDirPlaceholder] =
+		useState("");
 
 	useEffect(() => {
 		loadSettings();
@@ -51,18 +58,25 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 	const loadSettings = async () => {
 		setLoading(true);
 		try {
-			const settings = await api.settings.getAll();
+			const [settings, fg, tmpDir] = await Promise.all([
+				api.settings.getAll(),
+				api.forgegraph.credentials(),
+				api.s3.downloadTmpDir(),
+			]);
 			setTheme((settings.theme as Theme) || "system");
 			setCheckUpdates(settings.check_updates_on_startup !== "false");
 			setOpenaiEndpoint(settings.openai_endpoint || "");
 			setOpenaiApiKey(settings.openai_api_key || "");
 			setOpenaiModel(settings.openai_model || "gpt-4.1");
-			setForgegraphServer(settings.forgegraph_server || "");
-			setForgegraphToken(settings.forgegraph_token || "");
+			setForgegraphServer(fg.server || settings.forgegraph_server || "");
+			setForgegraphToken(fg.token || settings.forgegraph_token || "");
+			setForgegraphCredSource(fg.source === "cli" ? "cli" : "settings");
 			setCloudflareToken(settings.cloudflare_api_token || "");
 			setCloudflareAccountId(settings.cloudflare_account_id || "");
 			setCloudflareR2Key(settings.cloudflare_r2_access_key || "");
 			setCloudflareR2Secret(settings.cloudflare_r2_secret_key || "");
+			setDownloadTmpDir(settings.download_tmp_dir || "");
+			setDownloadTmpDirPlaceholder(tmpDir || "");
 		} catch (error) {
 			console.error("Failed to load settings:", error);
 		} finally {
@@ -87,6 +101,7 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 			await api.settings.set("cloudflare_account_id", cloudflareAccountId);
 			await api.settings.set("cloudflare_r2_access_key", cloudflareR2Key);
 			await api.settings.set("cloudflare_r2_secret_key", cloudflareR2Secret);
+			await api.settings.set("download_tmp_dir", downloadTmpDir);
 
 			applyTheme(theme);
 			toast.success("Settings saved");
@@ -176,6 +191,43 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 							{t}
 						</Button>
 					))}
+				</div>
+			</div>
+
+			<div className="space-y-3">
+				<h3 className={headingSize}>Downloads</h3>
+				<p className="text-[0.8rem] text-muted-foreground">
+					Double-clicking an S3 or R2 object downloads it here and opens it.
+				</p>
+				<div className="space-y-2">
+					<Label htmlFor="download-tmp-dir" className={compact ? "text-sm" : ""}>
+						Temporary folder
+					</Label>
+					<div className="flex gap-2">
+						<Input
+							id="download-tmp-dir"
+							placeholder={downloadTmpDirPlaceholder || "OS temp /dbcooper"}
+							value={downloadTmpDir}
+							onChange={(e) => setDownloadTmpDir(e.target.value)}
+						/>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={async () => {
+								const selected = await open({
+									directory: true,
+									multiple: false,
+									defaultPath: downloadTmpDir || downloadTmpDirPlaceholder || undefined,
+								});
+								if (typeof selected === "string") {
+									setDownloadTmpDir(selected);
+								}
+							}}
+						>
+							<Folder className="size-4" />
+							Browse
+						</Button>
+					</div>
 				</div>
 			</div>
 
@@ -271,6 +323,11 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 
 			<div className="space-y-3">
 				<h3 className={headingSize}>ForgeGraph</h3>
+				<p className="text-[0.8rem] text-muted-foreground">
+					{forgegraphCredSource === "cli"
+						? "Loaded from ~/.forgegraph/credentials.json (forge CLI). That file is used for sync even if these fields are empty."
+						: "Paste a server URL and API token, or run `forge login` so DBcooper can read ~/.forgegraph/credentials.json."}
+				</p>
 				<div className="space-y-2">
 					<Label htmlFor="forgegraph-server" className={compact ? "text-sm" : ""}>
 						Server URL
@@ -328,9 +385,11 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 			<div className="space-y-3">
 				<h3 className={headingSize}>Cloudflare</h3>
 				<p className="text-[0.8rem] text-muted-foreground">
-					API token needs D1 Read/Write and Workers R2 Storage Read/Write.
-					Object browsing derives S3 keys from the token id + SHA-256 of the
-					token value. If that fails, set optional R2 S3 keys below.
+					User tokens (My Profile → API Tokens) or account tokens (`cfat_`)
+					both work. Needs D1 Read/Write and Workers R2 Storage Read/Write.
+					Account tokens may need an Account ID. Object browsing derives S3
+					keys from the token id + SHA-256 of the token value; if that fails,
+					set optional R2 S3 keys below.
 				</p>
 				<div className="space-y-2">
 					<Label htmlFor="cf-token" className={compact ? "text-sm" : ""}>
@@ -340,7 +399,7 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 						<Input
 							id="cf-token"
 							type={showCloudflareToken ? "text" : "password"}
-							placeholder="Cloudflare API token"
+							placeholder="cfut_… or cfat_…"
 							value={cloudflareToken}
 							onChange={(e) => setCloudflareToken(e.target.value)}
 							className="pr-10"
@@ -366,7 +425,7 @@ export function SettingsForm({ onSaveSuccess, compact }: SettingsFormProps) {
 					</Label>
 					<Input
 						id="cf-account"
-						placeholder="Auto-detected on Test if you have one account"
+						placeholder="Required for some account tokens; otherwise auto-detected"
 						value={cloudflareAccountId}
 						onChange={(e) => setCloudflareAccountId(e.target.value)}
 					/>

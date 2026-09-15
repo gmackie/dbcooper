@@ -795,7 +795,7 @@ export function ConnectionDetails() {
 			try {
 				// ForgeGraph connections are already pooled by the sidebar's
 				// forgegraph_connect command — skip the pool.connect call.
-				if (isForgeGraph || isCloudflare) {
+				if (isForgeGraph || isCloudflare || isObjectStore(connection.type)) {
 					setConnectionStatus("connected");
 					if (usesSqlExplorer(connection.type)) {
 						setLoadingPhase("loading-schema");
@@ -1164,6 +1164,10 @@ export function ConnectionDetails() {
 				fgState.kind,
 				fgState.resourceId,
 			);
+		} else if (isObjectStore(connection?.type)) {
+			setConnectionStatus("connected");
+			toast.success("Reconnected successfully");
+			return;
 		} else {
 			connectResult = await api.pool.connect(uuid);
 		}

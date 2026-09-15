@@ -45,6 +45,25 @@ pub struct TokenVerify {
     pub status: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CloudflareAuth {
+    pub token_id: Option<String>,
+    pub accounts: Vec<CloudflareAccount>,
+}
+
+pub fn normalize_api_token(token: &str) -> String {
+    let token = token.trim();
+    let token = token
+        .strip_prefix("Bearer ")
+        .or_else(|| token.strip_prefix("bearer "))
+        .unwrap_or(token);
+    token.trim().to_string()
+}
+
+pub fn is_account_api_token(token: &str) -> bool {
+    normalize_api_token(token).starts_with("cfat_")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct R2S3Credentials {
     pub access_key_id: String,
@@ -75,7 +94,7 @@ impl CloudflareClient {
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             api_base: DEFAULT_API_BASE.to_string(),
-            token: token.into(),
+            token: normalize_api_token(&token.into()),
         }
     }
 
@@ -129,8 +148,75 @@ impl CloudflareClient {
         self.get_json("/user/tokens/verify").await
     }
 
+    pub async fn verify_account_token(&self, account_id: &str) -> Result<TokenVerify, String> {
+        self.get_json(&format!("/accounts/{account_id}/tokens/verify"))
+            .await
+    }
+
     pub async fn list_accounts(&self) -> Result<Vec<CloudflareAccount>, String> {
         self.get_json("/accounts").await
+    }
+
+    /// Resolve token identity without assuming a user API token.
+    ///
+    /// Account tokens (`cfat_…`) fail `GET /user/tokens/verify` with
+    /// "Invalid API Token" even when they can list accounts, D1, and R2.
+    pub async fn authenticate(&self, account_id: Option<&str>) -> Result<CloudflareAuth, String> {
+        let account_id = account_id.map(str::trim).filter(|id| !id.is_empty());
+
+        if let Some(id) = account_id {
+            if is_account_api_token(&self.token) {
+                let verify = self.verify_account_token(id).await?;
+                let accounts = self.list_accounts().await.unwrap_or_default();
+                return Ok(CloudflareAuth {
+                    token_id: Some(verify.id),
+                    accounts,
+                });
+            }
+        }
+
+        match self.verify_token().await {
+            Ok(verify) => {
+                let accounts = self.list_accounts().await.unwrap_or_default();
+                Ok(CloudflareAuth {
+                    token_id: Some(verify.id),
+                    accounts,
+                })
+            }
+            Err(user_err) => {
+                if let Some(id) = account_id {
+                    if let Ok(verify) = self.verify_account_token(id).await {
+                        let accounts = self.list_accounts().await.unwrap_or_default();
+                        return Ok(CloudflareAuth {
+                            token_id: Some(verify.id),
+                            accounts,
+                        });
+                    }
+                }
+
+                match self.list_accounts().await {
+                    Ok(accounts) if !accounts.is_empty() => {
+                        let token_id = if let Some(id) = account_id.or(accounts.first().map(|a| a.id.as_str()))
+                        {
+                            self.verify_account_token(id)
+                                .await
+                                .ok()
+                                .map(|verify| verify.id)
+                        } else {
+                            None
+                        };
+                        Ok(CloudflareAuth { token_id, accounts })
+                    }
+                    Ok(_) | Err(_) => {
+                        if is_account_api_token(&self.token) && account_id.is_none() {
+                            Err("This Cloudflare token is account-scoped (cfat_). Paste your Account ID from the dashboard URL, then test again.".to_string())
+                        } else {
+                            Err(user_err)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub async fn list_d1_databases(&self, account_id: &str) -> Result<Vec<D1Database>, String> {

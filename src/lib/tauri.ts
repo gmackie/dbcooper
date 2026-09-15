@@ -230,6 +230,12 @@ export interface CachedForgeGraphService {
 	syncedAt: string;
 }
 
+export interface ForgeGraphCredentials {
+	server: string;
+	token: string;
+	source: "cli" | "settings";
+}
+
 export const api = {
 	connections: {
 		list: () => invoke<Connection[]>("get_connections"),
@@ -823,6 +829,9 @@ export const api = {
 			}),
 
 		isConfigured: () => invoke<boolean>("forgegraph_is_configured"),
+
+		credentials: () =>
+			invoke<ForgeGraphCredentials>("forgegraph_credentials"),
 	},
 
 	cloudflare: {
@@ -879,6 +888,9 @@ export const api = {
 			invoke<S3ObjectPreview>("s3_preview_object", { source, key }),
 		downloadObject: (source: S3Source, key: string, destPath: string) =>
 			invoke<void>("s3_download_object", { source, key, destPath }),
+		downloadTmpDir: () => invoke<string>("s3_download_tmp_dir"),
+		openObject: (source: S3Source, key: string) =>
+			invoke<string>("s3_open_object", { source, key }),
 		uploadObject: (source: S3Source, key: string, filePath: string) =>
 			invoke<void>("s3_upload_object", { source, key, filePath }),
 		deleteObjects: (source: S3Source, keys: string[]) =>
